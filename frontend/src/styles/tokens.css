@@ -1,0 +1,16 @@
+:root {
+  --color-dark-blue: #0f5fdc;
+  --color-tech-purple: #5f1ebe;
+  --color-dark-purple: #411482;
+  --color-mid-purple: #8c69f0;
+  --color-light-purple: #b9c8ff;
+  --color-tech-blue: #3c91ff;
+  --color-mid-blue: #8cc8fa;
+  --color-light-blue: #c9e5ff;
+  --color-tech-gray: #dce6f0;
+  --color-ink: #101828;
+  --color-muted: #52647a;
+  --color-surface: #ffffff;
+  --shadow-soft: 0 18px 50px rgba(15, 95, 220, 0.13);
+}
+
