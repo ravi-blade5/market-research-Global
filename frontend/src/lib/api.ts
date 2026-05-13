@@ -185,6 +185,12 @@ export async function getRunHistory() {
   return request<RunHistoryItem[]>("/api/runs/history");
 }
 
+export async function deleteRun(runId: string) {
+  return request<{ deleted: boolean; run_id: string; evidence_rows_deleted: number; artifacts_deleted: number }>(`/api/runs/${runId}`, {
+    method: "DELETE"
+  });
+}
+
 export async function getReport(runId: string) {
   return request<AccountReport>(`/api/reports/${runId}`);
 }

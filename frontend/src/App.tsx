@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { BrainCircuit, ShieldCheck } from "lucide-react";
 import {
   createRun,
+  deleteRun,
   getReport,
   getRun,
   getRunHistory,
@@ -196,6 +197,26 @@ export function App() {
     setBrowserTasks((current) => current.filter((task) => task.id !== runId));
   }
 
+  async function deleteSavedRun(runId: string) {
+    const target = history.find((item) => item.id === runId);
+    const label = target ? `${target.company_name} (${target.mode})` : runId;
+    const confirmed = window.confirm(`Delete ${label}? This removes the run history, evidence rows, and generated artifacts.`);
+    if (!confirmed) return;
+    setError(null);
+    try {
+      await deleteRun(runId);
+      setHistory((current) => current.filter((item) => item.id !== runId));
+      setBrowserTasks((current) => current.filter((task) => task.id !== runId));
+      if (run?.id === runId) {
+        setRun(null);
+        setReport(null);
+      }
+      void refreshHistory();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete saved run.");
+    }
+  }
+
   return (
     <div className="app-shell">
       <header className="app-header">
@@ -244,6 +265,7 @@ export function App() {
             isLoading={isHistoryLoading}
             onOpenRun={openRun}
             onRefresh={refreshHistory}
+            onDeleteRun={deleteSavedRun}
           />
         </div>
         <ReportViewer report={report} />

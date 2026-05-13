@@ -1,4 +1,4 @@
-import { FileText, RefreshCw, Search, X } from "lucide-react";
+import { FileText, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { RunHistoryItem } from "../lib/api";
 
@@ -8,6 +8,7 @@ interface RunHistoryProps {
   isLoading: boolean;
   onOpenRun: (runId: string) => void;
   onRefresh: () => void;
+  onDeleteRun: (runId: string) => void;
 }
 
 function formatDate(value?: string | null) {
@@ -15,7 +16,7 @@ function formatDate(value?: string | null) {
   return new Date(value).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
 }
 
-export function RunHistory({ activeRunId, runs, isLoading, onOpenRun, onRefresh }: RunHistoryProps) {
+export function RunHistory({ activeRunId, runs, isLoading, onOpenRun, onRefresh, onDeleteRun }: RunHistoryProps) {
   const [query, setQuery] = useState("");
   const normalizedQuery = query.trim().toLowerCase();
   const filteredRuns = useMemo(() => {
@@ -72,25 +73,35 @@ export function RunHistory({ activeRunId, runs, isLoading, onOpenRun, onRefresh 
       ) : (
         <div className="history-list">
           {filteredRuns.slice(0, 12).map((item) => (
-            <button
+            <div
               className={activeRunId === item.id ? "history-row active" : "history-row"}
               key={item.id}
-              onClick={() => onOpenRun(item.id)}
-              type="button"
             >
-              <FileText size={16} />
-              <span>
-                <strong>{item.company_name}</strong>
-                <small>
-                  {item.mode} | {item.status} | {formatDate(item.completed_at ?? item.created_at)}
-                </small>
-                {item.has_report && (
+              <button className="history-row-main" onClick={() => onOpenRun(item.id)} type="button">
+                <FileText size={16} />
+                <span>
+                  <strong>{item.company_name}</strong>
                   <small>
-                    {item.claim_count} claims | {item.source_count} sources | {item.table_row_count} rows
+                    {item.mode} | {item.status} | {formatDate(item.completed_at ?? item.created_at)}
                   </small>
-                )}
-              </span>
-            </button>
+                  {item.has_report && (
+                    <small>
+                      {item.claim_count} claims | {item.source_count} sources | {item.table_row_count} rows
+                    </small>
+                  )}
+                </span>
+              </button>
+              <button
+                aria-label={`Delete ${item.company_name} report`}
+                className="history-delete-button"
+                onClick={() => onDeleteRun(item.id)}
+                title="Delete run and artifacts"
+                type="button"
+              >
+                <Trash2 size={14} />
+                <small>Delete</small>
+              </button>
+            </div>
           ))}
         </div>
       )}

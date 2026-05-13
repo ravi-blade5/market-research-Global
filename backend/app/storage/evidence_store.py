@@ -92,6 +92,15 @@ class EvidenceTableStore:
                     rows,
                 )
 
+    def delete_run(self, run_id: str) -> int:
+        with self._connect() as connection:
+            deleted_count = connection.execute(
+                "SELECT COUNT(*) FROM evidence_rows WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()[0]
+            connection.execute("DELETE FROM evidence_rows WHERE run_id = ?", (run_id,))
+        return int(deleted_count)
+
     def table_counts(self, run_id: str) -> dict[str, int]:
         with self._connect() as connection:
             rows = connection.execute(

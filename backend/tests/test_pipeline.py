@@ -31,3 +31,26 @@ def test_pipeline_generates_report_and_artifacts(tmp_path):
     assert all(claim.evidence_source_ids for claim in completed.report.claims)
     assert all(check.passed for check in completed.report.quality_checks if check.severity == "blocker")
 
+
+def test_local_store_delete_removes_run_artifacts_and_evidence_rows(tmp_path):
+    settings = Settings(data_dir=tmp_path, allow_live_providers=False)
+    store = LocalRunStore(settings)
+    orchestrator = ResearchOrchestrator(settings, store)
+    run = orchestrator.create_run(
+        ResearchRunCreate(company_name="DeleteCo", mode=ResearchMode.quick, freshness_window=FreshnessWindow.six_months)
+    )
+    completed = asyncio.run(orchestrator.execute_run(run.id))
+    artifact_dir = settings.artifacts_dir / completed.id
+
+    assert store.get(completed.id) is not None
+    assert artifact_dir.exists()
+    assert store.evidence_tables.table_counts(completed.id)
+
+    result = store.delete(completed.id)
+
+    assert result["deleted"] is True
+    assert result["evidence_rows_deleted"] > 0
+    assert result["artifacts_deleted"] >= 3
+    assert store.get(completed.id) is None
+    assert not artifact_dir.exists()
+    assert store.evidence_tables.table_counts(completed.id) == {}

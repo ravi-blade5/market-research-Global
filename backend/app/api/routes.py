@@ -60,6 +60,14 @@ async def get_run(run_id: str):
     return run
 
 
+@router.delete("/runs/{run_id}")
+async def delete_run(run_id: str):
+    result = store.delete(run_id)
+    if not result["deleted"]:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return result
+
+
 @router.get("/runs")
 async def list_runs():
     return [run for run in store.list()]
