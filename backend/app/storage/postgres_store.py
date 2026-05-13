@@ -84,19 +84,20 @@ class PostgresEvidenceTableStore:
             connection.execute("DELETE FROM evidence_rows WHERE run_id = %s", (report.run_id,))
             rows = [self._row_tuple(report.run_id, row, existing_embeddings.get(row.id)) for row in report.evidence_table_rows]
             if rows:
-                connection.executemany(
-                    """
-                    INSERT INTO evidence_rows (
-                        run_id, row_id, table_name, row_type, section_id, title, detail,
-                        normalized_fields, source_ids, snapshot_ids, claim_ids,
-                        signal_ids, extracted_value_ids, source_tier, signal_type,
-                        confidence_score, include_in_analysis, created_at,
-                        embedding_model, embedding_dimensions, embedding_json, embedding_updated_at
+                with connection.cursor() as cursor:
+                    cursor.executemany(
+                        """
+                        INSERT INTO evidence_rows (
+                            run_id, row_id, table_name, row_type, section_id, title, detail,
+                            normalized_fields, source_ids, snapshot_ids, claim_ids,
+                            signal_ids, extracted_value_ids, source_tier, signal_type,
+                            confidence_score, include_in_analysis, created_at,
+                            embedding_model, embedding_dimensions, embedding_json, embedding_updated_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        rows,
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    rows,
-                )
             connection.commit()
 
     def delete_run(self, run_id: str) -> int:
@@ -274,17 +275,18 @@ class PostgresEvidenceTableStore:
         updated_at = datetime.now(UTC)
         rows = [(model, dimensions, Jsonb(vector), updated_at, run_id, row_id) for row_id, vector in embeddings_by_row_id.items()]
         with self._connect() as connection:
-            connection.executemany(
-                """
-                UPDATE evidence_rows
-                SET embedding_model = %s,
-                    embedding_dimensions = %s,
-                    embedding_json = %s,
-                    embedding_updated_at = %s
-                WHERE run_id = %s AND row_id = %s
-                """,
-                rows,
-            )
+            with connection.cursor() as cursor:
+                cursor.executemany(
+                    """
+                    UPDATE evidence_rows
+                    SET embedding_model = %s,
+                        embedding_dimensions = %s,
+                        embedding_json = %s,
+                        embedding_updated_at = %s
+                    WHERE run_id = %s AND row_id = %s
+                    """,
+                    rows,
+                )
             connection.commit()
 
     def semantic_search_rows(
