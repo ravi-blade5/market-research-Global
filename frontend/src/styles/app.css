@@ -247,10 +247,34 @@ a {
   border-radius: 8px;
 }
 
+.run-notes.collapsed {
+  max-height: 150px;
+  overflow: hidden;
+}
+
+.run-notes.expanded {
+  max-height: 320px;
+  overflow: auto;
+}
+
 .run-notes p {
   margin: 0;
   font-size: 12px;
   line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.run-notes-toggle {
+  justify-self: start;
+  margin-top: 4px;
+  padding: 6px 8px;
+  color: var(--color-dark-blue);
+  background: white;
+  border: 1px solid var(--color-mid-blue);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .history-panel {

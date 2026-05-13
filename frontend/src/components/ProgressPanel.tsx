@@ -1,4 +1,5 @@
-import { CheckCircle2, Circle, Loader2, XCircle } from "lucide-react";
+import { ChevronDown, ChevronUp, CheckCircle2, Circle, Loader2, XCircle } from "lucide-react";
+import { useState } from "react";
 import type { ResearchRun } from "../lib/api";
 
 interface ProgressPanelProps {
@@ -13,6 +14,8 @@ function AgentIcon({ status }: { status: string }) {
 }
 
 export function ProgressPanel({ run }: ProgressPanelProps) {
+  const [showRunNotes, setShowRunNotes] = useState(false);
+
   if (!run) {
     return (
       <section className="surface muted-state">
@@ -20,6 +23,16 @@ export function ProgressPanel({ run }: ProgressPanelProps) {
       </section>
     );
   }
+
+  const runNotes = run.run_notes ?? [];
+  const checkpointNotes = runNotes.filter((note) => note.includes("Cloud Tasks"));
+  const primaryNotes = runNotes.filter((note) => !note.includes("Cloud Tasks")).slice(0, 2);
+  const collapsedNotes = [
+    ...primaryNotes,
+    ...(checkpointNotes.length > 0 ? [`Cloud Tasks checkpoint activity: ${checkpointNotes.length} dispatch events recorded.`] : [])
+  ];
+  const visibleNotes = showRunNotes ? runNotes : collapsedNotes;
+  const hasHiddenNotes = runNotes.length > collapsedNotes.length || checkpointNotes.length > 0;
 
   return (
     <section className="surface">
@@ -36,11 +49,17 @@ export function ProgressPanel({ run }: ProgressPanelProps) {
         <span className={`status-pill ${run.status}`}>{run.status}</span>
       </div>
 
-      {run.run_notes && run.run_notes.length > 0 ? (
-        <div className="run-notes">
-          {run.run_notes.map((note) => (
-            <p key={note}>{note}</p>
+      {visibleNotes.length > 0 ? (
+        <div className={`run-notes ${showRunNotes ? "expanded" : "collapsed"}`}>
+          {visibleNotes.map((note, index) => (
+            <p key={`${index}-${note}`}>{note}</p>
           ))}
+          {hasHiddenNotes ? (
+            <button className="run-notes-toggle" onClick={() => setShowRunNotes((current) => !current)} type="button">
+              {showRunNotes ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+              {showRunNotes ? "Hide activity details" : `Show activity details (${runNotes.length})`}
+            </button>
+          ) : null}
         </div>
       ) : null}
 
