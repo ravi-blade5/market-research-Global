@@ -30,14 +30,14 @@ class ResearchOrchestrator:
             company_name=request.company_name.strip(),
             mode=request.mode,
             freshness_window=request.freshness_window,
-            workflow_profile="deep_dive_live_single_worker" if request.mode.value == "deep" else "quick_scan_quality_first",
+            workflow_profile="deep_dive_checkpointed_agent_waves" if request.mode.value == "deep" else "quick_scan_quality_first",
             expected_duration_seconds=3600 if request.mode.value == "deep" else 900,
             run_notes=(
                 [
                     "Deep Dive now waits on OpenAI Deep Research background polling, Firecrawl extraction jobs, and Apify actor extraction when providers are configured.",
                     "Quality-first mode is active: OpenAI search, synthesis, and strategy agents use high/xhigh reasoning with broader evidence payloads before optimization.",
                     "Local execution persists agent checkpoints after each orchestration wave and can resume from the last completed agent if re-executed.",
-                    "Production deployment should dispatch Deep Dive through Cloud Tasks/Workflows instead of FastAPI BackgroundTasks.",
+                    "Cloud Tasks execution dispatches one saved orchestration wave at a time in production, so long Deep Dive runs can resume between agent waves.",
                 ]
                 if request.mode.value == "deep"
                 else [
@@ -58,6 +58,12 @@ class ResearchOrchestrator:
         return self.store.save(run)
 
     async def execute_run(self, run_id: str) -> ResearchRun:
+        while True:
+            run = await self.execute_next_wave(run_id)
+            if run.status in {RunStatus.completed, RunStatus.failed}:
+                return run
+
+    async def execute_next_wave(self, run_id: str) -> ResearchRun:
         run = self.store.get(run_id)
         if not run:
             raise ValueError(f"Run {run_id} not found")
@@ -65,6 +71,7 @@ class ResearchOrchestrator:
             return run
 
         run.status = RunStatus.planning
+        run.error = None
         run.updated_at = utc_now()
         if run.report is None:
             run.report = new_report_for_run(run)
@@ -107,7 +114,11 @@ class ResearchOrchestrator:
             run.report = context.report
             run.updated_at = utc_now()
             self.store.save(run)
+            return run
 
+        return self._finalize_run(run)
+
+    def _finalize_run(self, run: ResearchRun) -> ResearchRun:
         if run.report:
             pptx_path = self.store.artifact_path(run.id, "pptx")
             pdf_path = self.store.artifact_path(run.id, "pdf")

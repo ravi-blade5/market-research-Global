@@ -4,7 +4,7 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
 from fastapi.responses import FileResponse
 
 from app.config import settings
-from app.models import DrilldownRequest, DrilldownRun, ResearchRunCreate
+from app.models import DrilldownRequest, DrilldownRun, ResearchRunCreate, RunStatus
 from app.services.orchestrator import ResearchOrchestrator
 from app.services.report_chat import ReportChatService
 from app.services.task_dispatcher import RunTaskDispatcher, should_use_cloud_tasks
@@ -36,7 +36,12 @@ async def execute_run_task(run_id: str, x_task_dispatch_token: str | None = Head
     if not settings.task_dispatch_token or x_task_dispatch_token != settings.task_dispatch_token:
         raise HTTPException(status_code=403, detail="Invalid task dispatch token")
     try:
-        return await orchestrator.execute_run(run_id)
+        run = await orchestrator.execute_next_wave(run_id)
+        if task_dispatcher and run.status not in {RunStatus.completed, RunStatus.failed}:
+            task_name = task_dispatcher.enqueue_run(run.id)
+            run.run_notes.append(f"Queued next checkpoint wave through Cloud Tasks: {task_name}")
+            store.save(run)
+        return run
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

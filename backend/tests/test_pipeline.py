@@ -57,6 +57,28 @@ def test_local_store_delete_removes_run_artifacts_and_evidence_rows(tmp_path):
     assert store.evidence_tables.table_counts(completed.id) == {}
 
 
+def test_execute_next_wave_persists_checkpoint_before_completion(tmp_path):
+    settings = Settings(data_dir=tmp_path, allow_live_providers=False)
+    store = LocalRunStore(settings)
+    orchestrator = ResearchOrchestrator(settings, store)
+    run = orchestrator.create_run(
+        ResearchRunCreate(company_name="WaveCo", mode=ResearchMode.quick, freshness_window=FreshnessWindow.six_months)
+    )
+
+    checkpoint = asyncio.run(orchestrator.execute_next_wave(run.id))
+
+    assert checkpoint.status != "completed"
+    assert checkpoint.report is not None
+    assert any(agent.status == "completed" for agent in checkpoint.agents)
+    assert any(agent.status == "pending" for agent in checkpoint.agents)
+
+    completed = asyncio.run(orchestrator.execute_run(run.id))
+
+    assert completed.status == "completed"
+    assert completed.progress == 100
+    assert all(agent.status == "completed" for agent in completed.agents)
+
+
 def test_cloud_tasks_backend_detection():
     assert should_use_cloud_tasks(Settings(run_execution_backend="cloud_tasks")) is True
     assert should_use_cloud_tasks(Settings(run_execution_backend="tasks")) is True
