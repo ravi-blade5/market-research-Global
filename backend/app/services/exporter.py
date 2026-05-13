@@ -222,7 +222,14 @@ def _summary_bullets(text: str, source_numbers: dict[str, int], limit: int = 4) 
     return bullets[:limit] or [cleaned]
 
 
-def _wrap_text(text: str, font_name: str, font_size: int, max_width: float, max_lines: int | None = None) -> list[str]:
+def _wrap_text(
+    text: str,
+    font_name: str,
+    font_size: int,
+    max_width: float,
+    max_lines: int | None = None,
+    add_ellipsis: bool = True,
+) -> list[str]:
     words = text.replace("\n", " ").split()
     lines: list[str] = []
     current = ""
@@ -244,7 +251,7 @@ def _wrap_text(text: str, font_name: str, font_size: int, max_width: float, max_
         lines.append(current)
     if max_lines and len(lines) > max_lines:
         lines = lines[:max_lines]
-    if max_lines and len(lines) == max_lines and words:
+    if add_ellipsis and max_lines and len(lines) == max_lines and words:
         last = lines[-1]
         if len(" ".join(words)) > len(" ".join(lines)):
             lines[-1] = last[:-3].rstrip() + "..." if len(last) > 12 else last + "..."
@@ -262,10 +269,11 @@ def _draw_wrapped(
     leading: int,
     color: colors.Color,
     max_lines: int | None = None,
+    add_ellipsis: bool = True,
 ) -> float:
     page.setFillColor(color)
     page.setFont(font_name, font_size)
-    for line in _wrap_text(text, font_name, font_size, max_width, max_lines):
+    for line in _wrap_text(text, font_name, font_size, max_width, max_lines, add_ellipsis=add_ellipsis):
         page.drawString(x, y, line)
         y -= leading
     return y
@@ -385,6 +393,14 @@ def _row_strength(row: EvidenceTableRow) -> str:
         or row.row_type
     )
     return str(raw).replace("_", " ").title()
+
+
+def _row_display_text(row: EvidenceTableRow, source_numbers: dict[str, int]) -> str:
+    title = _clean_text(row.title, source_numbers)
+    detail = _clean_text(row.detail, source_numbers)
+    if title.endswith("...") and detail and len(detail) > len(title):
+        return detail
+    return title
 
 
 def _source_refs(source_ids: list[str], source_numbers: dict[str, int], limit: int = 4) -> str:
@@ -528,6 +544,7 @@ class ReportExporter:
             self._add_slide(prs, slide_spec, report, source_numbers)
             if slide_spec.id == "executive_readout":
                 self._add_pptx_leadership_brief(prs, report, source_numbers)
+                self._add_pptx_leadership_details(prs, report, source_numbers)
             if slide_spec.id == "section_coverage":
                 self._add_pptx_insight_inventory(prs, report, source_numbers)
                 inserted_inventory = True
@@ -747,31 +764,91 @@ class ReportExporter:
             heading.text_frame.paragraphs[0].font.size = Pt(14)
             heading.text_frame.paragraphs[0].font.color.rgb = _rgb("dark_blue")
             note = slide.shapes.add_textbox(Inches(x_positions[idx] + 0.18), Inches(2.17), Inches(3.1), Inches(0.45))
-            note.text_frame.text = _truncate(str(column["subtitle"]), 92)
-            note.text_frame.paragraphs[0].font.size = Pt(7.5)
-            note.text_frame.paragraphs[0].font.color.rgb = _rgb("dark_purple")
-            y = 2.8
+            note_frame = note.text_frame
+            note_frame.word_wrap = True
+            note_frame.text = str(column["subtitle"])
+            note_frame.paragraphs[0].font.size = Pt(7.2)
+            note_frame.paragraphs[0].font.color.rgb = _rgb("dark_purple")
+            y = 2.68
             for row in rows:
-                row_box = slide.shapes.add_textbox(Inches(x_positions[idx] + 0.18), Inches(y), Inches(3.12), Inches(0.82))
+                row_box = slide.shapes.add_textbox(Inches(x_positions[idx] + 0.18), Inches(y), Inches(3.12), Inches(1.06))
                 row_frame = row_box.text_frame
                 row_frame.word_wrap = True
+                row_frame.margin_left = Inches(0.02)
+                row_frame.margin_right = Inches(0.02)
+                row_frame.margin_top = Inches(0.01)
+                row_frame.margin_bottom = Inches(0.01)
                 row_frame.clear()
                 p = row_frame.paragraphs[0]
-                p.text = _truncate(_clean_text(row.title, source_numbers), 112)
+                p.text = _row_display_text(row, source_numbers)
                 p.font.bold = True
-                p.font.size = Pt(7.5)
+                p.font.size = Pt(6.4)
                 p.font.color.rgb = _rgb("dark_blue")
                 detail = row_frame.add_paragraph()
                 detail.text = f"{_row_strength(row)} | {_source_refs(row.source_ids, source_numbers, limit=3)}"
-                detail.font.size = Pt(6.5)
+                detail.font.size = Pt(6.0)
                 detail.font.color.rgb = _rgb("dark_purple")
-                y += 1.03
+                y += 1.18
 
         footer = slide.shapes.add_textbox(Inches(0.55), Inches(6.95), Inches(12.2), Inches(0.25))
         footer.text_frame.text = "HCLTech Market Research Portal | Executive synthesis"
         footer.text_frame.paragraphs[0].font.size = Pt(8)
         footer.text_frame.paragraphs[0].font.color.rgb = _rgb("light_blue")
         footer.text_frame.paragraphs[0].alignment = PP_ALIGN.RIGHT
+
+    def _add_pptx_leadership_details(self, prs: Presentation, report: AccountReport, source_numbers: dict[str, int]) -> None:
+        for column in _leadership_brief(report):
+            rows: list[EvidenceTableRow] = column["rows"]  # type: ignore[assignment]
+            if not rows:
+                continue
+            slide = prs.slides.add_slide(prs.slide_layouts[6])
+            bg = slide.background.fill
+            bg.solid()
+            bg.fore_color.rgb = _rgb("light_blue")
+            header = slide.shapes.add_shape(1, Inches(0), Inches(0), Inches(13.333), Inches(0.82))
+            header.fill.solid()
+            header.fill.fore_color.rgb = _rgb("dark_blue")
+            header.line.fill.background()
+            title_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.18), Inches(10.8), Inches(0.45))
+            title_box.text_frame.text = f"Leadership Brief Details - {column['title']}"
+            title_box.text_frame.paragraphs[0].font.bold = True
+            title_box.text_frame.paragraphs[0].font.size = Pt(21)
+            title_box.text_frame.paragraphs[0].font.color.rgb = _rgb("tech_gray")
+            subtitle = slide.shapes.add_textbox(Inches(0.65), Inches(1.02), Inches(12.0), Inches(0.32))
+            subtitle.text_frame.text = str(column["subtitle"])
+            subtitle.text_frame.paragraphs[0].font.size = Pt(9)
+            subtitle.text_frame.paragraphs[0].font.color.rgb = _rgb("dark_purple")
+
+            y = 1.5
+            for idx, row in enumerate(rows, start=1):
+                box = slide.shapes.add_shape(1, Inches(0.62), Inches(y), Inches(12.05), Inches(1.48))
+                box.fill.solid()
+                box.fill.fore_color.rgb = _rgb("tech_gray" if idx % 2 else "light_blue")
+                box.line.color.rgb = _rgb("mid_blue")
+                text = slide.shapes.add_textbox(Inches(0.84), Inches(y + 0.12), Inches(11.55), Inches(1.22))
+                frame = text.text_frame
+                frame.word_wrap = True
+                frame.margin_left = Inches(0.02)
+                frame.margin_right = Inches(0.02)
+                frame.margin_top = Inches(0.01)
+                frame.margin_bottom = Inches(0.01)
+                frame.clear()
+                p = frame.paragraphs[0]
+                p.text = f"{idx}. {_row_display_text(row, source_numbers)}"
+                p.font.bold = True
+                p.font.size = Pt(10)
+                p.font.color.rgb = _rgb("dark_blue")
+                detail = frame.add_paragraph()
+                detail.text = f"{_row_strength(row)} | {_source_refs(row.source_ids, source_numbers, limit=8)}"
+                detail.font.size = Pt(8)
+                detail.font.color.rgb = _rgb("dark_purple")
+                y += 1.66
+
+            footer = slide.shapes.add_textbox(Inches(0.55), Inches(6.95), Inches(12.2), Inches(0.25))
+            footer.text_frame.text = "HCLTech Market Research Portal | Leadership detail"
+            footer.text_frame.paragraphs[0].font.size = Pt(8)
+            footer.text_frame.paragraphs[0].font.color.rgb = _rgb("dark_blue")
+            footer.text_frame.paragraphs[0].alignment = PP_ALIGN.RIGHT
 
     def _add_pptx_insight_inventory(self, prs: Presentation, report: AccountReport, source_numbers: dict[str, int]) -> None:
         for section in _insight_inventory(report, limit_per_section=7):
@@ -915,6 +992,7 @@ class ReportExporter:
 
         page_number = self._draw_pdf_summary_pages(page, report, source_numbers, width, height, page_number)
         page_number = self._draw_pdf_leadership_brief(page, report, source_numbers, width, height, page_number)
+        page_number = self._draw_pdf_leadership_details(page, report, source_numbers, width, height, page_number)
         page_number = self._draw_pdf_insight_inventory(page, report, source_numbers, width, height, page_number)
 
         for section in report.sections:
@@ -1098,6 +1176,7 @@ class ReportExporter:
             13,
             _rl_color("dark_purple"),
             max_lines=3,
+            add_ellipsis=False,
         )
         y -= 16
         y = _draw_wrapped(
@@ -1182,7 +1261,7 @@ class ReportExporter:
             for row in rows:
                 _draw_wrapped(
                     page,
-                    _clean_text(row.title, source_numbers),
+                    _row_display_text(row, source_numbers),
                     x + 14,
                     y,
                     panel_w - 28,
@@ -1190,21 +1269,74 @@ class ReportExporter:
                     7,
                     8,
                     _rl_color("dark_blue"),
-                    max_lines=2,
+                    max_lines=4,
+                    add_ellipsis=False,
                 )
                 _draw_wrapped(
                     page,
                     f"{_row_strength(row)} | {_source_refs(row.source_ids, source_numbers, limit=3)}",
                     x + 14,
-                    y - 19,
+                    y - 32,
                     panel_w - 28,
                     "Helvetica",
                     6,
                     7,
                     _rl_color("dark_purple"),
                     max_lines=1,
+                    add_ellipsis=False,
                 )
-                y -= 58
+                y -= 74
+        return page_number
+
+    def _draw_pdf_leadership_details(
+        self,
+        page: canvas.Canvas,
+        report: AccountReport,
+        source_numbers: dict[str, int],
+        width: float,
+        height: float,
+        page_number: int,
+    ) -> int:
+        for column in _leadership_brief(report):
+            rows: list[EvidenceTableRow] = column["rows"]  # type: ignore[assignment]
+            if not rows:
+                continue
+            page.showPage()
+            page_number += 1
+            self._draw_pdf_header(page, f"Leadership Brief Details - {column['title']}", width, height, page_number, str(column["subtitle"]))
+            y = height - 100
+            for idx, row in enumerate(rows, start=1):
+                box_top = y + 10
+                box_h = 102
+                page.setFillColor(_rl_color("tech_gray" if idx % 2 else "light_blue"))
+                page.roundRect(40, box_top - box_h, width - 80, box_h, 6, fill=1, stroke=0)
+                y = _draw_wrapped(
+                    page,
+                    f"{idx}. {_row_display_text(row, source_numbers)}",
+                    54,
+                    box_top - 22,
+                    width - 108,
+                    "Helvetica-Bold",
+                    9,
+                    11,
+                    _rl_color("dark_blue"),
+                    max_lines=5,
+                    add_ellipsis=False,
+                )
+                y = _draw_wrapped(
+                    page,
+                    f"{_row_strength(row)} | {_source_refs(row.source_ids, source_numbers, limit=8)}",
+                    54,
+                    y - 6,
+                    width - 108,
+                    "Helvetica",
+                    7,
+                    9,
+                    _rl_color("dark_purple"),
+                    max_lines=2,
+                    add_ellipsis=False,
+                )
+                y = box_top - box_h - 16
         return page_number
 
     def _draw_pdf_insight_inventory(

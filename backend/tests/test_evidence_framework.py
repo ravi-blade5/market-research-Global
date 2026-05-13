@@ -2,26 +2,31 @@ from __future__ import annotations
 
 import asyncio
 
+from pptx import Presentation
+
 from app.agents.base import AgentContext
 from app.agents import pipeline
 from app.config import Settings
 from app.models import (
     AccountReport,
     Claim,
+    DeckSpec,
     EvidenceSignal,
     EvidenceSignalType,
     EvidenceSource,
+    EvidenceTableRow,
     ExtractedValue,
     FreshnessWindow,
     ReportSection,
     ResearchMode,
     ResearchRun,
+    SlideSpec,
     SourceCredibility,
     SourceSnapshot,
     SourceTier,
 )
 from app.providers.registry import ProviderRegistry
-from app.services.exporter import _clean_text, _insight_inventory, _leadership_brief
+from app.services.exporter import ReportExporter, _clean_text, _insight_inventory, _leadership_brief
 from app.services.report_chat import ReportChatService
 from app.storage.evidence_store import EvidenceTableStore
 
@@ -359,6 +364,56 @@ def test_leadership_brief_prioritizes_account_moves_from_evidence_tables(tmp_pat
 
     assert [column["title"] for column in brief] == ["What changed", "Why it matters", "What HCLTech should do"]
     assert any("HCLTech" in row.title for column in brief for row in column["rows"])
+
+
+def test_pptx_leadership_details_expose_full_truncated_row_text(tmp_path):
+    context = _context(tmp_path)
+    source = pipeline._enrich_source(
+        EvidenceSource(
+            url="https://example.com/newsroom/buying-center",
+            title="BenchmarkCo buying center update",
+            publisher="BenchmarkCo",
+            credibility=SourceCredibility.company_page,
+            credibility_score=0.86,
+        )
+    )
+    context.report.sources.append(source)
+    context.report.evidence_table_rows.append(
+        EvidenceTableRow(
+            table_name="strategic_priorities",
+            row_type="claim",
+            section_id="account_priorities",
+            title="Taken together, the verified leadership and strategy evidence maps the primary buying center to the C...",
+            detail=(
+                "Taken together, the verified leadership and strategy evidence maps the primary buying center "
+                "to the CFO, CIO, procurement, and transformation leaders for the full account motion."
+            ),
+            source_ids=[source.id],
+            confidence_score=0.86,
+        )
+    )
+    context.report.deck_spec = DeckSpec(
+        title="BenchmarkCo",
+        subtitle="Test",
+        brand_tokens={},
+        slides=[
+            SlideSpec(
+                id="executive_readout",
+                title="Executive Readout",
+                layout="section",
+                bullets=["Leadership synthesis"],
+                citation_source_ids=[source.id],
+            )
+        ],
+    )
+
+    pptx_path = tmp_path / "leadership_details.pptx"
+    ReportExporter().export_pptx(context.report, pptx_path)
+    presentation = Presentation(str(pptx_path))
+    deck_text = "\n".join(shape.text for slide in presentation.slides for shape in slide.shapes if hasattr(shape, "text"))
+
+    assert "Leadership Brief Details - Why it matters" in deck_text
+    assert "CFO, CIO, procurement, and transformation leaders" in deck_text
 
 
 def test_evidence_table_store_persists_queryable_rows(tmp_path):
