@@ -154,7 +154,15 @@ export interface AccountReport {
   quality_checks: QualityCheck[];
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
+declare global {
+  interface Window {
+    __APP_CONFIG__?: {
+      apiBase?: string;
+    };
+  }
+}
+
+const API_BASE = window.__APP_CONFIG__?.apiBase || import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {

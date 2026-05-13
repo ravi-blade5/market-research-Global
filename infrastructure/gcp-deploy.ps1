@@ -73,6 +73,7 @@ gcloud run deploy $WebService `
   --memory 512Mi `
   --cpu 1 `
   --timeout 300 `
+  --set-env-vars "VITE_API_BASE=$apiUrl" `
   --set-build-env-vars "VITE_API_BASE=$apiUrl"
 
 $webUrl = gcloud run services describe $WebService --region $Region --project $ProjectId --format "value(status.url)"
