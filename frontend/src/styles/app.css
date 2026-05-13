@@ -258,6 +258,39 @@ a {
   gap: 12px;
 }
 
+.history-search {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  color: var(--color-dark-blue);
+  background: #f8fbff;
+  border: 1px solid var(--color-light-blue);
+  border-radius: 8px;
+}
+
+.history-search input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  color: var(--color-ink);
+  background: transparent;
+  font-size: 13px;
+}
+
+.history-search button {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--color-dark-blue);
+  background: var(--color-light-blue);
+  border: 1px solid var(--color-mid-blue);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
 .history-list {
   display: grid;
   gap: 8px;

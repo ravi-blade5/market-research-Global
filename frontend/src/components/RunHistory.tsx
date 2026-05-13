@@ -1,4 +1,5 @@
-import { FileText, RefreshCw } from "lucide-react";
+import { FileText, RefreshCw, Search, X } from "lucide-react";
+import { useMemo, useState } from "react";
 import type { RunHistoryItem } from "../lib/api";
 
 interface RunHistoryProps {
@@ -15,6 +16,27 @@ function formatDate(value?: string | null) {
 }
 
 export function RunHistory({ activeRunId, runs, isLoading, onOpenRun, onRefresh }: RunHistoryProps) {
+  const [query, setQuery] = useState("");
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredRuns = useMemo(() => {
+    if (!normalizedQuery) {
+      return runs;
+    }
+    return runs.filter((item) =>
+      [
+        item.id,
+        item.company_name,
+        item.mode,
+        item.status,
+        item.freshness_window,
+        formatDate(item.completed_at ?? item.created_at)
+      ]
+        .join(" ")
+        .toLowerCase()
+        .includes(normalizedQuery)
+    );
+  }, [normalizedQuery, runs]);
+
   return (
     <section className="surface history-panel">
       <div className="surface-header">
@@ -27,11 +49,29 @@ export function RunHistory({ activeRunId, runs, isLoading, onOpenRun, onRefresh 
         </button>
       </div>
 
+      <div className="history-search">
+        <Search size={15} />
+        <input
+          aria-label="Search recent reports"
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search company, mode, status..."
+          type="search"
+          value={query}
+        />
+        {query && (
+          <button aria-label="Clear recent report search" onClick={() => setQuery("")} type="button">
+            <X size={14} />
+          </button>
+        )}
+      </div>
+
       {runs.length === 0 ? (
         <p className="workflow-note">No saved runs yet. Completed reports will appear here.</p>
+      ) : filteredRuns.length === 0 ? (
+        <p className="workflow-note">No reports match this search.</p>
       ) : (
         <div className="history-list">
-          {runs.slice(0, 12).map((item) => (
+          {filteredRuns.slice(0, 12).map((item) => (
             <button
               className={activeRunId === item.id ? "history-row active" : "history-row"}
               key={item.id}
