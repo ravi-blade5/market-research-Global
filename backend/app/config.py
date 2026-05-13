@@ -8,6 +8,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     app_env: str = "local"
     data_dir: Path = Path("./data")
+    run_store_backend: str = "local"
+    artifact_backend: str = "local"
+    database_url: str | None = None
+    gcp_project_id: str | None = None
+    gcp_region: str = "us-central1"
+    gcs_artifact_bucket: str | None = None
+    cors_allow_origins: str = "*"
     openai_api_key: str | None = None
     firecrawl_api_key: str | None = None
     apify_api_token: str | None = None

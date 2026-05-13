@@ -76,7 +76,7 @@ class ReportChatService:
     ) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
         analytics = evidence_store.analytics_snapshot(run.id, question)
         if not (self.settings.openai_api_key and self.settings.allow_live_providers):
-            return evidence_store.hybrid_search_rows(run.id, question, limit=limit), analytics, "duckdb_keyword_sql"
+            return evidence_store.hybrid_search_rows(run.id, question, limit=limit), analytics, "evidence_mart_keyword_sql"
 
         model = self.settings.openai_embedding_model
         dimensions = self.settings.openai_embedding_dimensions
@@ -100,11 +100,11 @@ class ReportChatService:
                     limit=limit,
                 ),
                 analytics,
-                "duckdb_sql_plus_openai_embeddings",
+                "evidence_mart_sql_plus_openai_embeddings",
             )
         except Exception as exc:
             analytics["embedding_fallback"] = str(exc)
-            return evidence_store.hybrid_search_rows(run.id, question, limit=limit), analytics, "duckdb_keyword_sql_embedding_fallback"
+            return evidence_store.hybrid_search_rows(run.id, question, limit=limit), analytics, "evidence_mart_keyword_sql_embedding_fallback"
 
     async def answer(
         self,
@@ -133,7 +133,7 @@ class ReportChatService:
             )
         if not (self.settings.openai_api_key and self.settings.allow_live_providers):
             answer_lines = [
-                "Live GPT answering is disabled, so this is a retrieval-only answer from the DuckDB evidence mart and SQL summaries.",
+                "Live GPT answering is disabled, so this is a retrieval-only answer from the evidence mart and SQL summaries.",
                 "Most relevant evidence:",
             ]
             for row in payload_rows[:6]:
@@ -152,7 +152,7 @@ class ReportChatService:
                 analytics=analytics,
                 retrieval_mode=retrieval_mode,
                 model=None,
-                provider="duckdb_retrieval",
+                provider="evidence_mart_retrieval",
             )
 
         client = OpenAI(api_key=self.settings.openai_api_key, timeout=max(60, self.settings.openai_synthesis_timeout_seconds))
@@ -163,7 +163,7 @@ class ReportChatService:
             reasoning={"effort": "medium"},
             instructions=(
                 "You answer questions about a generated account-intelligence report. "
-                "Use only the provided DuckDB evidence rows and DuckDB analytical summaries. Do not use outside knowledge or web browsing. "
+                "Use only the provided evidence rows and SQL analytical summaries. Do not use outside knowledge or web browsing. "
                 "If the evidence rows do not answer the question, say that the report evidence does not contain it. "
                 "Use table counts and signal/source-tier mixes for analytical/count questions, and use evidence rows for factual support. "
                 "Cite evidence using the provided source_labels such as S3 or S10, and mention confidence or directionality when useful. "

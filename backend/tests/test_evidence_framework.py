@@ -728,11 +728,11 @@ def test_report_chat_uses_duckdb_rows_without_live_provider(tmp_path):
         )
     )
 
-    assert response.provider == "duckdb_retrieval"
-    assert response.retrieval_mode == "duckdb_keyword_sql"
+    assert response.provider == "evidence_mart_retrieval"
+    assert response.retrieval_mode == "evidence_mart_keyword_sql"
     assert response.analytics["table_counts"]
     assert response.evidence_rows
-    assert "DuckDB evidence mart" in response.answer
+    assert "evidence mart" in response.answer
 
 
 def test_exporter_clean_text_replaces_internal_source_ids_and_scaffold_text():

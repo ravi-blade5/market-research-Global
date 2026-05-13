@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import timezone
+from typing import Any
 
 from app.agents.base import Agent, AgentContext
 from app.agents.pipeline import get_agent_sequence, new_report_for_run, refresh_evidence_tables
@@ -9,15 +9,20 @@ from app.config import Settings
 from app.models import AgentRun, AgentStatus, ResearchRun, ResearchRunCreate, RunStatus, utc_now
 from app.providers.registry import ProviderRegistry
 from app.services.exporter import ReportExporter
-from app.storage.local_store import LocalRunStore
+from app.storage.gcs_artifacts import GCSArtifactStore
 
 
 class ResearchOrchestrator:
-    def __init__(self, settings: Settings, store: LocalRunStore):
+    def __init__(self, settings: Settings, store: Any):
         self.settings = settings
         self.store = store
         self.providers = ProviderRegistry(settings)
         self.exporter = ReportExporter()
+        self.artifact_store = (
+            GCSArtifactStore(settings.gcs_artifact_bucket)
+            if settings.artifact_backend.lower() == "gcs" and settings.gcs_artifact_bucket
+            else None
+        )
 
     def create_run(self, request: ResearchRunCreate) -> ResearchRun:
         agent_sequence = get_agent_sequence(request.mode)
@@ -108,6 +113,8 @@ class ResearchOrchestrator:
             pdf_path = self.store.artifact_path(run.id, "pdf")
             evidence_path = self.store.artifact_path(run.id, "evidence.json")
             artifacts = self.exporter.export_all(run.report, pptx_path, pdf_path, evidence_path)
+            if self.artifact_store:
+                artifacts = self.artifact_store.upload_artifacts(run.id, artifacts)
             run.report.artifacts = artifacts
 
         run.status = RunStatus.completed

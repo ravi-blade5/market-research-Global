@@ -7,12 +7,14 @@ from app.config import settings
 from app.models import DrilldownRequest, DrilldownRun, ResearchRunCreate
 from app.services.orchestrator import ResearchOrchestrator
 from app.services.report_chat import ReportChatService
-from app.storage.local_store import LocalRunStore
+from app.storage.factory import create_run_store
+from app.storage.gcs_artifacts import GCSArtifactStore
 
 router = APIRouter(prefix="/api")
-store = LocalRunStore(settings)
+store = create_run_store(settings)
 orchestrator = ResearchOrchestrator(settings, store)
 report_chat = ReportChatService(settings)
+artifact_store = GCSArtifactStore(settings.gcs_artifact_bucket) if settings.artifact_backend.lower() == "gcs" and settings.gcs_artifact_bucket else None
 
 
 @router.post("/runs")
@@ -65,6 +67,8 @@ async def delete_run(run_id: str):
     result = store.delete(run_id)
     if not result["deleted"]:
         raise HTTPException(status_code=404, detail="Run not found")
+    if artifact_store is not None:
+        result["artifacts_deleted"] = int(result.get("artifacts_deleted", 0)) + artifact_store.delete_run_artifacts(run_id)
     return result
 
 
@@ -126,6 +130,12 @@ async def get_artifact(run_id: str, kind: str):
         "pdf": "application/pdf",
         "evidence_json": "application/json",
     }[kind]
+    if artifact.path.startswith("gs://"):
+        if artifact_store is None:
+            raise HTTPException(status_code=500, detail="GCS artifact backend is not configured")
+        local_path = settings.artifacts_dir / run_id / artifact.path.rsplit("/", 1)[-1]
+        artifact_store.download_to_file(artifact.path, local_path)
+        return FileResponse(str(local_path), media_type=media_type, filename=local_path.name)
     return FileResponse(artifact.path, media_type=media_type, filename=artifact.path.split("\\")[-1].split("/")[-1])
 
 
@@ -182,8 +192,11 @@ async def provider_status():
         "apify_max_crawl_pages": settings.apify_max_crawl_pages,
         "agent_parallelism": settings.agent_parallelism,
         "run_execution": "fastapi_background_with_resumable_agent_checkpoints",
+        "run_store_backend": settings.run_store_backend,
+        "artifact_backend": settings.artifact_backend,
+        "gcs_artifact_bucket": settings.gcs_artifact_bucket,
         "evidence_table_store": str(store.evidence_tables.path),
-        "evidence_table_engine": "duckdb",
-        "report_chat_retrieval": "duckdb_sql_plus_embeddings_when_live",
+        "evidence_table_engine": "postgres" if settings.run_store_backend.lower() in {"postgres", "postgresql", "cloudsql", "cloud_sql"} else "duckdb",
+        "report_chat_retrieval": "sql_plus_embeddings_when_live",
         "report_chat_model": settings.openai_extraction_model,
     }
