@@ -1,5 +1,5 @@
 import { type FormEvent, useState } from "react";
-import { Download, FileJson, FileText, MessageCircle, Presentation, Send } from "lucide-react";
+import { ChevronDown, ChevronUp, Download, FileJson, FileText, MessageCircle, Presentation, Send } from "lucide-react";
 import {
   askReport,
   artifactUrl,
@@ -122,7 +122,6 @@ function sectionBullets(section: ReportSection, sourceNumbers: Map<string, numbe
   }
   return synthesis.bullets
     .filter((bullet): bullet is string => typeof bullet === "string" && bullet.trim().length > 0)
-    .slice(0, 4)
     .map((bullet) => cleanText(bullet, sourceNumbers));
 }
 
@@ -131,6 +130,7 @@ export function ReportViewer({ report }: ReportViewerProps) {
   const [chatResponse, setChatResponse] = useState<ReportChatResponse | null>(null);
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
 
   if (!report) {
     return (
@@ -165,6 +165,18 @@ export function ReportViewer({ report }: ReportViewerProps) {
     } finally {
       setChatLoading(false);
     }
+  }
+
+  function toggleSection(sectionId: string) {
+    setExpandedSections((current) => {
+      const next = new Set(current);
+      if (next.has(sectionId)) {
+        next.delete(sectionId);
+      } else {
+        next.add(sectionId);
+      }
+      return next;
+    });
   }
 
   return (
@@ -273,24 +285,38 @@ export function ReportViewer({ report }: ReportViewerProps) {
             const claims = claimsForSection(report, section);
             const signals = signalsForSection(report, section);
             const bullets = sectionBullets(section, sourceNumbers);
+            const isExpanded = expandedSections.has(section.id);
+            const summary = cleanText(section.summary, sourceNumbers);
+            const visibleBullets = isExpanded ? bullets : bullets.slice(0, 2);
+            const hiddenBulletCount = bullets.length - visibleBullets.length;
+            const hasExpandableContent = summary.length > 280 || hiddenBulletCount > 0;
             const chips = sourceChips(claims, report.sources, sourceNumbers);
             return (
-              <article className="report-section" id={section.id} key={section.id}>
+              <article className={`report-section${isExpanded ? " expanded" : ""}`} id={section.id} key={section.id}>
                 <div className="section-heading">
                   <h3>{section.title}</h3>
                   <span className={`section-status ${section.status}`}>{section.status}</span>
                 </div>
-                <p>{cleanText(section.summary, sourceNumbers)}</p>
-                {bullets.length > 0 && (
+                <div className="section-metrics">
+                  <span className="metric-chip">{claims.length} claims</span>
+                  {signals.length > 0 && <span className="metric-chip">{signals.length} signals</span>}
+                  <span className="metric-chip">{Math.round(section.confidence_score * 100)}% confidence</span>
+                </div>
+                <p className="section-summary">{summary}</p>
+                {visibleBullets.length > 0 && (
                   <ul className="section-points">
-                    {bullets.map((bullet) => (
-                      <li key={bullet}>{bullet}</li>
+                    {visibleBullets.map((bullet, index) => (
+                      <li key={`${section.id}-${index}-${bullet}`}>{bullet}</li>
                     ))}
                   </ul>
                 )}
+                {hasExpandableContent && (
+                  <button className="text-action" onClick={() => toggleSection(section.id)} type="button">
+                    {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                    {isExpanded ? "Show less" : hiddenBulletCount > 0 ? `Expand +${hiddenBulletCount}` : "Expand"}
+                  </button>
+                )}
                 <div className="section-evidence">
-                  <span>{claims.length} mapped claims</span>
-                  {signals.length > 0 && <span>{signals.length} evidence signals</span>}
                   {chips.length > 0 ? chips : <span className="muted-inline">No public citation attached</span>}
                 </div>
               </article>

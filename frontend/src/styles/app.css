@@ -467,17 +467,29 @@ a {
 
 .section-stack {
   display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 12px;
+  align-items: start;
+  grid-auto-flow: dense;
 }
 
 .report-section {
-  padding: 16px;
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  padding: 14px;
+}
+
+.report-section.expanded {
+  grid-column: span 2;
 }
 
 .report-section h3 {
   margin: 0;
   color: var(--color-dark-purple);
   font-size: 17px;
+  overflow-wrap: anywhere;
 }
 
 .report-section pre {
@@ -495,14 +507,69 @@ a {
 
 .section-points {
   display: grid;
-  gap: 8px;
-  margin: 12px 0;
+  gap: 6px;
+  margin: 2px 0;
   padding-left: 18px;
 }
 
 .section-points li {
   color: var(--color-ink);
-  line-height: 1.45;
+  font-size: 13px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.section-summary {
+  margin: 0;
+  line-height: 1.42;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.report-section.expanded .section-summary {
+  display: block;
+  overflow: visible;
+}
+
+.section-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: -2px;
+}
+
+.metric-chip {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  color: var(--color-dark-purple);
+  background: #f8fbff;
+  border: 1px solid var(--color-light-blue);
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.text-action {
+  width: fit-content;
+  min-height: 30px;
+  padding: 0 9px;
+  color: var(--color-dark-blue);
+  background: #f8fbff;
+  border: 1px solid var(--color-mid-blue);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.text-action:hover {
+  color: white;
+  background: var(--color-dark-blue);
+  border-color: var(--color-dark-blue);
 }
 
 .section-evidence,
@@ -514,8 +581,8 @@ a {
 }
 
 .section-evidence {
-  padding-top: 12px;
-  margin-top: 12px;
+  padding-top: 8px;
+  margin-top: 2px;
   border-top: 1px solid var(--color-light-blue);
   color: var(--color-muted);
   font-size: 12px;
@@ -810,6 +877,12 @@ a {
 
   .section-nav {
     position: static;
+  }
+}
+
+@media (max-width: 820px) {
+  .report-section.expanded {
+    grid-column: auto;
   }
 }
 
