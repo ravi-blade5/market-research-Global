@@ -14,6 +14,9 @@ export interface ResearchRun {
   mode: ResearchMode;
   freshness_window: FreshnessWindow;
   status: RunStatus;
+  created_at?: string;
+  updated_at?: string;
+  completed_at?: string | null;
   progress: number;
   expected_duration_seconds?: number | null;
   workflow_profile?: string;
