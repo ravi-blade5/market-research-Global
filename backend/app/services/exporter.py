@@ -403,6 +403,9 @@ INSIGHT_INVENTORY_SPECS = (
         "prefer_keywords": (
             "opportunity",
             "hcltech",
+            "bullseye",
+            "gtm",
+            "channel",
             "account move",
             "entry",
             "pilot",

@@ -529,6 +529,39 @@ def test_pptx_leadership_details_expose_full_truncated_row_text(tmp_path):
     assert "CFO, CIO, procurement, and transformation leaders" in deck_text
 
 
+def test_hcl_strategy_playbook_builds_bullseye_moves_and_gtm_channels(tmp_path):
+    context = _context(tmp_path)
+    source = pipeline._enrich_source(
+        EvidenceSource(
+            url="https://example.com/newsroom/cloud-ai-alliance",
+            title="BenchmarkCo cloud AI alliance and procurement modernization",
+            publisher="BenchmarkCo",
+            credibility=SourceCredibility.company_page,
+            credibility_score=0.86,
+        )
+    )
+    context.report.sources.append(source)
+    for section_id, text in [
+        ("partnerships_deals", "BenchmarkCo announced an AWS and Microsoft cloud AI alliance for enterprise automation."),
+        ("account_priorities", "BenchmarkCo executives are prioritizing procurement modernization, AI governance, and workflow automation."),
+        ("ai_strategy", "BenchmarkCo is expanding agentic AI and data strategy programs across business functions."),
+    ]:
+        claim_id = pipeline._add_claim(context, section_id, text, "fact", [source.id], 0.86)
+        pipeline._section(context, section_id).claim_ids.append(claim_id)
+
+    pipeline._apply_hcl_strategy_playbook(context, [source.id])
+    section = pipeline._section(context, "hcltech_penetration")
+    playbook = section.content["gtm_playbook"]
+
+    assert playbook["bullseye"]
+    assert 3 <= len(playbook["test_ring"]) <= 5
+    assert len(playbook["outer_ring"]) >= len(playbook["test_ring"])
+    channels = {row["channel"] for row in playbook["channel_taxonomy"]}
+    assert "Business Development / Alliance Motion" in channels
+    assert any("Bullseye account move" in claim.text for claim in context.report.claims)
+    assert any("GTM channel fit" in claim.text for claim in context.report.claims)
+
+
 def test_evidence_table_store_persists_queryable_rows(tmp_path):
     context = _context(tmp_path)
     source = pipeline._enrich_source(

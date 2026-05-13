@@ -5,6 +5,7 @@ import re
 from datetime import datetime, timezone
 
 from app.agents.base import Agent, AgentContext
+from app.agents.gtm_playbook import rank_gtm_channels
 from app.brand import css_tokens
 from app.models import (
     AccountReport,
@@ -1224,10 +1225,21 @@ def _apply_hcl_strategy_playbook(context: AgentContext, source_ids: list[str]) -
     ]
     if not useful_claims:
         return
+    strategy_source_ids = _merge_source_ids(
+        source_ids,
+        [source_id for claim in useful_claims for source_id in claim.evidence_source_ids],
+        limit=12,
+    )
     corpus = " ".join(
         [claim.text.lower() for claim in useful_claims]
         + [f"{signal.title} {signal.detail}".lower() for signal in context.report.evidence_signals]
     )
+    industry_corpus = " ".join(
+        claim.text.lower()
+        for claim in useful_claims
+        if claim.section_id in {"company_overview", "financial_trends"}
+    )
+    has_industry_corpus = bool(industry_corpus.strip())
 
     play_catalog = [
         (
@@ -1272,7 +1284,7 @@ def _apply_hcl_strategy_playbook(context: AgentContext, source_ids: list[str]) -
         ),
         (
             "retail / consumer",
-            ["retail", "commerce", "consumer", "store", "loyalty", "merchandising", "supply chain"],
+            ["retail", "commerce", "consumer", "store", "loyalty", "merchandising"],
             "customer data, commerce, and supply-chain intelligence workstream",
         ),
         (
@@ -1300,38 +1312,106 @@ def _apply_hcl_strategy_playbook(context: AgentContext, source_ids: list[str]) -
     plays: list[str] = [
         play for play, keywords in play_catalog if any(keyword in corpus for keyword in keywords)
     ]
-    overlays = [
-        overlay for _, keywords, overlay in industry_overlays if any(keyword in corpus for keyword in keywords)
-    ]
+    overlay_candidates: list[tuple[int, int, str]] = []
+    for _, keywords, overlay in industry_overlays:
+        primary_score = sum(1 for keyword in keywords if keyword in industry_corpus)
+        secondary_score = sum(1 for keyword in keywords if keyword in corpus)
+        if (has_industry_corpus and primary_score > 0) or (not has_industry_corpus and secondary_score > 0) or secondary_score >= 3:
+            overlay_candidates.append((primary_score, secondary_score, overlay))
+    overlay_candidates.sort(key=lambda item: (-item[0], -item[1], item[2]))
+    overlays = [overlay for _, _, overlay in overlay_candidates[:1]]
     for overlay in reversed(overlays[:2]):
         if overlay not in plays:
             plays.insert(0, overlay)
     if not plays:
         plays.append("account-specific modernization pilot derived from verified priorities")
 
+    ranked_channels = rank_gtm_channels(corpus, limit=8)
+    channel_rows = [
+        {
+            "channel": channel.name,
+            "category": channel.category,
+            "fit_score": score,
+            "entry_motion": channel.motion,
+            "proof_asset": channel.proof_asset,
+            "success_metric": channel.success_metric,
+            "trap_to_avoid": channel.trap_to_avoid,
+        }
+        for channel, score in ranked_channels
+    ]
+    account_moves: list[dict[str, str | int]] = []
+    for index, (channel, score) in enumerate(ranked_channels):
+        play = plays[index % len(plays)]
+        account_moves.append(
+            {
+                "rank": index + 1,
+                "title": f"{channel.name}: {play}",
+                "gtm_channel": channel.name,
+                "category": channel.category,
+                "entry_play": play,
+                "entry_motion": channel.motion,
+                "proof_asset": channel.proof_asset,
+                "success_metric": channel.success_metric,
+                "trap_to_avoid": channel.trap_to_avoid,
+                "fit_score": score,
+            }
+        )
+    bullseye_moves = account_moves[:2]
+    test_ring_moves = account_moves[:5]
+    outer_ring_moves = account_moves
+
     evidence_headlines = [_claim_headline_text(claim.text, limit=140) for claim in useful_claims[:4]]
+    lead_moves = [str(move["title"]) for move in bullseye_moves] or plays[:2]
     section.summary = (
-        "Recommended HCLTech penetration motion: lead with "
+        "Recommended HCLTech penetration motion: use a Bullseye account-motion filter and lead with "
+        + "; ".join(lead_moves)
+        + ". Core solution plays: "
         + "; ".join(plays[:3])
-        + ". First 90 days: validate the relevant buying center, run a co-innovation discovery workshop, and shape one pilot around a measurable business, technology, or operating outcome. Validate commercial timing with the account team before client use."
+        + ". First 90 days: test the top 3-5 motions, validate the relevant buying center, and shape one pilot around a measurable business, technology, or operating outcome. Validate commercial timing with the account team before client use."
     )
     section.content["synthesis"] = {
         "provider": "cross_section_strategy_playbook",
-        "model": "deterministic_claim_synthesis",
+        "model": "deterministic_gtm_bullseye_synthesis",
         "reasoning_effort": "policy",
-        "bullets": [f"Entry play: {play}" for play in plays[:4]]
+        "bullets": [f"Bullseye account move: {move['title']} - {move['entry_motion']}" for move in bullseye_moves]
+        + [f"Test-ring account move: {move['title']} - proof asset: {move['proof_asset']}" for move in test_ring_moves[2:5]]
+        + [f"GTM channel fit: {row['channel']} ({row['category']}) - metric: {row['success_metric']}" for row in channel_rows[:4]]
         + [f"Evidence premise: {headline}" for headline in evidence_headlines[:4]],
     }
+    section.content["gtm_playbook"] = {
+        "method": "Bullseye-style account penetration",
+        "outer_ring": outer_ring_moves,
+        "test_ring": test_ring_moves,
+        "bullseye": bullseye_moves,
+        "channel_taxonomy": channel_rows,
+    }
     section.status = "partial"
-    section.confidence_score = max(section.confidence_score, 0.72)
-    for play in plays[:4]:
+    section.confidence_score = max(section.confidence_score, 0.76)
+    for move in bullseye_moves + test_ring_moves[2:5]:
         claim_id = _add_claim(
             context,
             "hcltech_penetration",
-            f"HCLTech recommended entry play: {play}",
+            (
+                f"Bullseye account move rank {move['rank']}: use {move['gtm_channel']} to pursue "
+                f"{move['entry_play']}; motion: {move['entry_motion']}; proof asset: {move['proof_asset']}; "
+                f"success metric: {move['success_metric']}."
+            ),
             "recommendation",
-            source_ids[:8],
-            0.72,
+            strategy_source_ids[:8],
+            min(0.88, 0.74 + (int(move["fit_score"]) * 0.02)),
+        )
+        section.claim_ids.append(claim_id)
+    for row in channel_rows[:4]:
+        claim_id = _add_claim(
+            context,
+            "hcltech_penetration",
+            (
+                f"GTM channel fit: {row['channel']} ({row['category']}) is a relevant HCLTech account-penetration path; "
+                f"entry motion: {row['entry_motion']}; avoid: {row['trap_to_avoid']}"
+            ),
+            "recommendation",
+            strategy_source_ids[:8],
+            min(0.86, 0.72 + (int(row["fit_score"]) * 0.02)),
         )
         section.claim_ids.append(claim_id)
 
@@ -2949,6 +3029,8 @@ class HCLTechPenetrationAgent(Agent):
                 "Create HCLTech account-penetration guidance from verified evidence. "
                 "Recommend what HCLTech should build or do, entry points, custom solution themes, first-90-day pursuit motions, risks, and triggers. "
                 "You may recommend custom HCLTech solution themes as strategic inferences from cited account premises. "
+                "Structure account moves using a Bullseye-style filter: brainstorm an outer ring of plausible entry motions, test the 3-5 most promising motions, and identify the top 1-2 bullseye moves. "
+                "Map each move to an enterprise GTM channel such as Enterprise Sales, Business Development / Alliance Motion, Cloud Marketplace / Private Offer, Existing Platform / Integration Motion, Engineering-as-Marketing Pilot, Executive Thought Leadership, Field Event / Executive Workshop, or Account-Based Content. "
                 "Use the evidence graph signals attached to sources to connect investments, partnerships, hiring, technology, AI, vendor, and executive evidence into account entry plays. "
                 "Do not claim a current HCLTech capability inventory unless it is in evidence; focus on what HCLTech should build, test, or propose."
             ),
@@ -3051,6 +3133,7 @@ class ConsensusAgent(Agent):
             (
                 "Produce a concise consensus recommendation from the report claims and evidence. "
                 "Rank top account moves, confidence, rationale, and risks. "
+                "When HCLTech penetration evidence is available, preserve the Bullseye structure: top 1-2 bullseye moves, 3-5 test motions, and the GTM channel used for each move. "
                 "Use recommendations when their premises are cited; do not require the recommendation itself to be stated verbatim by a source. "
                 "Use the cross-section evidence graph signals to reason across finance, investments, partnerships, hiring, technology, AI, vendor, executive, and news evidence. "
                 "Do not leave consensus unavailable when multiple partial sections have cited claims or evidence signals."
