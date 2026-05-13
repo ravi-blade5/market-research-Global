@@ -151,6 +151,53 @@ def test_stale_only_claims_are_flagged_for_freshness_sensitive_sections(tmp_path
     assert claim_id in pipeline._stale_sensitive_claim_ids(context)
 
 
+def test_rejected_claims_do_not_feed_reader_facing_tables_or_slide_bullets(tmp_path):
+    context = _context(tmp_path)
+    source = pipeline._enrich_source(
+        EvidenceSource(
+            url="https://example.com/newsroom/current-ai",
+            title="BenchmarkCo current AI update",
+            publisher="BenchmarkCo",
+            credibility=SourceCredibility.company_page,
+            credibility_score=0.84,
+        )
+    )
+    context.report.sources.append(source)
+    good_claim_id = pipeline._add_claim(
+        context,
+        "ai_strategy",
+        "BenchmarkCo announced a current AI workflow update.",
+        "fact",
+        [source.id],
+        0.84,
+    )
+    rejected_claim = Claim(
+        id="claim_rejected",
+        section_id="ai_strategy",
+        text="BenchmarkCo stale-only AI claim should not reach reader-facing synthesis.",
+        claim_type="fact",
+        evidence_source_ids=[source.id],
+        confidence_score=0.9,
+        verification_status="rejected",
+    )
+    good_claim = next(claim for claim in context.report.claims if claim.id == good_claim_id)
+    good_claim.verification_status = "verified"
+    context.report.claims.append(rejected_claim)
+    section = pipeline._section(context, "ai_strategy")
+    section.claim_ids.extend([good_claim_id, rejected_claim.id])
+    section.summary = "AI strategy summary."
+
+    pipeline._suppress_rejected_claims_from_reader_sections(context)
+    pipeline.refresh_evidence_tables(context)
+    bullets = pipeline._section_slide_bullets(context, section, limit=5)
+
+    rejected_rows = [row for row in context.report.evidence_table_rows if row.claim_ids == [rejected_claim.id]]
+    assert rejected_rows and rejected_rows[0].include_in_analysis is False
+    assert rejected_claim.id not in section.claim_ids
+    assert all("stale-only" not in bullet for bullet in bullets)
+    assert any("current AI workflow" in bullet for bullet in bullets)
+
+
 def test_add_claim_creates_evidence_signal_and_dedupes(tmp_path):
     context = _context(tmp_path)
     source = pipeline._enrich_source(
@@ -386,6 +433,8 @@ def test_exporter_builds_insight_inventory_from_evidence_tables(tmp_path):
     ]:
         claim_id = pipeline._add_claim(context, section_id, text, "fact" if section_id != "hcltech_penetration" else "recommendation", [source.id], 0.86)
         pipeline._section(context, section_id).claim_ids.append(claim_id)
+    for claim in context.report.claims:
+        claim.verification_status = "verified"
 
     pipeline.refresh_evidence_tables(context)
 
@@ -420,6 +469,8 @@ def test_leadership_brief_prioritizes_account_moves_from_evidence_tables(tmp_pat
     ]:
         claim_id = pipeline._add_claim(context, section_id, text, "recommendation" if section_id == "hcltech_penetration" else "fact", [source.id], 0.84)
         pipeline._section(context, section_id).claim_ids.append(claim_id)
+    for claim in context.report.claims:
+        claim.verification_status = "verified"
     pipeline.refresh_evidence_tables(context)
 
     brief = _leadership_brief(context.report)

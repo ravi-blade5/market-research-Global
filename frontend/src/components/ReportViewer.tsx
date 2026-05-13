@@ -155,7 +155,12 @@ function claimsForSection(report: AccountReport, section: ReportSection) {
 }
 
 function signalsForSection(report: AccountReport, section: ReportSection) {
-  return (report.evidence_signals ?? []).filter((signal) => signal.section_id === section.id);
+  const verifiedClaimIds = new Set(report.claims.filter((claim) => claim.verification_status === "verified").map((claim) => claim.id));
+  return (report.evidence_signals ?? []).filter(
+    (signal) =>
+      signal.section_id === section.id &&
+      (signal.claim_ids.length === 0 || signal.claim_ids.some((claimId) => verifiedClaimIds.has(claimId)))
+  );
 }
 
 function signalMix(signals: EvidenceSignal[]) {
@@ -194,6 +199,14 @@ function sectionBullets(section: ReportSection, sourceNumbers: Map<string, numbe
   return synthesis.bullets
     .filter((bullet): bullet is string => typeof bullet === "string" && bullet.trim().length > 0)
     .map((bullet) => cleanText(bullet, sourceNumbers));
+}
+
+function claimBullets(claims: Claim[], sourceNumbers: Map<string, number>) {
+  return claims
+    .filter((claim) => claim.verification_status === "verified" && claim.claim_type !== "unavailable")
+    .sort((a, b) => b.confidence_score - a.confidence_score)
+    .slice(0, 6)
+    .map((claim) => cleanText(claim.text, sourceNumbers));
 }
 
 export function ReportViewer({ report }: ReportViewerProps) {
@@ -354,14 +367,16 @@ export function ReportViewer({ report }: ReportViewerProps) {
         <div className="section-stack">
           {report.sections.map((section) => {
             const claims = claimsForSection(report, section);
+            const verifiedClaims = claims.filter((claim) => claim.verification_status === "verified");
             const signals = signalsForSection(report, section);
-            const bullets = sectionBullets(section, sourceNumbers);
+            const verifiedBullets = claimBullets(claims, sourceNumbers);
+            const bullets = verifiedBullets.length > 0 ? verifiedBullets : sectionBullets(section, sourceNumbers);
             const isExpanded = expandedSections.has(section.id);
             const summary = cleanText(section.summary, sourceNumbers);
             const visibleBullets = isExpanded ? bullets : bullets.slice(0, 2);
             const hiddenBulletCount = bullets.length - visibleBullets.length;
             const hasExpandableContent = summary.length > 280 || hiddenBulletCount > 0;
-            const chips = sourceChips(claims, report.sources, sourceNumbers, section.id);
+            const chips = sourceChips(verifiedClaims, report.sources, sourceNumbers, section.id);
             return (
               <article className={`report-section${isExpanded ? " expanded" : ""}`} id={section.id} key={section.id}>
                 <div className="section-heading">
@@ -369,7 +384,7 @@ export function ReportViewer({ report }: ReportViewerProps) {
                   <span className={`section-status ${section.status}`}>{section.status}</span>
                 </div>
                 <div className="section-metrics">
-                  <span className="metric-chip">{claims.length} claims</span>
+                  <span className="metric-chip">{verifiedClaims.length} verified claims</span>
                   {signals.length > 0 && <span className="metric-chip">{signals.length} signals</span>}
                   <span className="metric-chip">{Math.round(section.confidence_score * 100)}% confidence</span>
                 </div>
@@ -423,6 +438,7 @@ export function ReportViewer({ report }: ReportViewerProps) {
             <div className="evidence-list compact">
               {evidenceSignals
                 .slice()
+                .filter((signal) => signal.claim_ids.length === 0 || signal.claim_ids.some((claimId) => report.claims.some((claim) => claim.id === claimId && claim.verification_status === "verified")))
                 .sort((a, b) => b.confidence_score - a.confidence_score)
                 .slice(0, 12)
                 .map((signal) => (

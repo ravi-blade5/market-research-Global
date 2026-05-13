@@ -622,6 +622,11 @@ def refresh_evidence_tables(context: AgentContext) -> None:
 
     rows: list[EvidenceTableRow] = []
     seen: set[tuple] = set()
+    verified_claim_ids = {
+        claim.id
+        for claim in report.claims
+        if claim.verification_status == "verified"
+    }
 
     for source in report.sources:
         tier = source.source_tier or _infer_source_tier(source)
@@ -730,12 +735,17 @@ def refresh_evidence_tables(context: AgentContext) -> None:
                 source_ids=claim.evidence_source_ids,
                 claim_ids=[claim.id],
                 confidence_score=claim.confidence_score,
-                include_in_analysis=claim.claim_type != "unavailable" and not _is_policy_or_guardrail_claim(claim.text),
+                include_in_analysis=(
+                    claim.verification_status == "verified"
+                    and claim.claim_type != "unavailable"
+                    and not _is_policy_or_guardrail_claim(claim.text)
+                ),
             ),
             seen,
         )
 
     for signal in report.evidence_signals:
+        signal_claims_verified = not signal.claim_ids or any(claim_id in verified_claim_ids for claim_id in signal.claim_ids)
         _append_table_row(
             rows,
             EvidenceTableRow(
@@ -754,7 +764,7 @@ def refresh_evidence_tables(context: AgentContext) -> None:
                 signal_ids=[signal.id],
                 signal_type=signal.signal_type,
                 confidence_score=signal.confidence_score,
-                include_in_analysis=signal.signal_strength != "unsupported",
+                include_in_analysis=signal.signal_strength != "unsupported" and signal_claims_verified,
             ),
             seen,
         )
@@ -777,7 +787,8 @@ def refresh_evidence_tables(context: AgentContext) -> None:
                 },
                 claim_ids=section.claim_ids,
                 confidence_score=section.confidence_score,
-                include_in_analysis=section.status != "unavailable",
+                include_in_analysis=section.status != "unavailable"
+                and any(claim_id in verified_claim_ids for claim_id in section.claim_ids),
             ),
             seen,
         )
@@ -822,6 +833,16 @@ def _section_claims(context: AgentContext, section_id: str) -> list[Claim]:
     section = _section(context, section_id)
     claim_ids = set(section.claim_ids)
     return [claim for claim in context.report.claims if claim.id in claim_ids]
+
+
+def _reader_claims_for_section(context: AgentContext, section_id: str) -> list[Claim]:
+    return [
+        claim
+        for claim in _section_claims(context, section_id)
+        if claim.verification_status == "verified"
+        and claim.claim_type != "unavailable"
+        and not _is_policy_or_guardrail_claim(claim.text)
+    ]
 
 
 def _reader_ready_claim_text(text: str) -> str:
@@ -994,6 +1015,27 @@ def _stale_sensitive_claim_ids(context: AgentContext) -> list[str]:
         if linked_sources and all(_source_is_stale_for_section(context, source, claim.section_id) for source in linked_sources):
             stale_claims.append(claim.id)
     return stale_claims
+
+
+def _suppress_rejected_claims_from_reader_sections(context: AgentContext) -> None:
+    rejected_claim_ids = {claim.id for claim in context.report.claims if claim.verification_status == "rejected"}
+    if not rejected_claim_ids:
+        return
+    for section in context.report.sections:
+        original_claim_ids = section.claim_ids[:]
+        section.claim_ids = [claim_id for claim_id in section.claim_ids if claim_id not in rejected_claim_ids]
+        if original_claim_ids == section.claim_ids or not _is_recency_sensitive_section(section.id):
+            continue
+        verified_claims = sorted(_reader_claims_for_section(context, section.id), key=lambda item: item.confidence_score, reverse=True)
+        if not verified_claims:
+            continue
+        headlines = [_claim_headline_text(claim.text, limit=170) for claim in verified_claims[:4]]
+        section.summary = "Verified current evidence indicates: " + "; ".join(headline for headline in headlines if headline) + "."
+        synthesis = section.content.get("synthesis") if isinstance(section.content, dict) else None
+        if not isinstance(synthesis, dict):
+            synthesis = {}
+            section.content["synthesis"] = synthesis
+        synthesis["bullets"] = [_reader_ready_claim_text(claim.text) for claim in verified_claims[:6]]
 
 
 def _source_ids_from_claims(
@@ -1296,19 +1338,17 @@ def _apply_hcl_strategy_playbook(context: AgentContext, source_ids: list[str]) -
 
 def _section_slide_bullets(context: AgentContext, section: ReportSection, *, limit: int = 5) -> list[str]:
     bullets: list[str] = []
-    synthesis = section.content.get("synthesis") if isinstance(section.content, dict) else None
-    if isinstance(synthesis, dict):
-        for bullet in synthesis.get("bullets") or []:
-            if isinstance(bullet, str) and bullet.strip():
-                bullets.append(_reader_ready_claim_text(bullet))
-    if section.summary:
+    verified_claims = sorted(_reader_claims_for_section(context, section.id), key=lambda item: item.confidence_score, reverse=True)
+    if verified_claims:
+        bullets.extend(_reader_ready_claim_text(claim.text) for claim in verified_claims)
+    else:
+        synthesis = section.content.get("synthesis") if isinstance(section.content, dict) else None
+        if isinstance(synthesis, dict):
+            for bullet in synthesis.get("bullets") or []:
+                if isinstance(bullet, str) and bullet.strip():
+                    bullets.append(_reader_ready_claim_text(bullet))
+    if section.summary and not verified_claims:
         bullets.insert(0, _reader_ready_claim_text(section.summary))
-    for claim in sorted(_section_claims(context, section.id), key=lambda item: item.confidence_score, reverse=True):
-        if claim.claim_type == "unavailable":
-            continue
-        text = _reader_ready_claim_text(claim.text)
-        if text and text not in bullets:
-            bullets.append(text)
     unique_bullets: list[str] = []
     seen: set[str] = set()
     for bullet in bullets:
@@ -3106,6 +3146,7 @@ class VerificationAgent(Agent):
                 blockers.append(claim.id)
                 if stale_only:
                     stale_evidence_claims.append(claim.id)
+        _suppress_rejected_claims_from_reader_sections(context)
         refresh_evidence_tables(context)
         signal_count = len(context.report.evidence_signals)
         table_row_count = len(context.report.evidence_table_rows)
@@ -3183,6 +3224,7 @@ class ReportGeneratorAgent(Agent):
 
     async def run(self, context: AgentContext) -> AgentContext:
         _dedupe_report_claims(context.report)
+        _suppress_rejected_claims_from_reader_sections(context)
         refresh_evidence_tables(context)
         sources_by_id = {source.id: source for source in context.report.sources}
         verified_claims = [claim for claim in context.report.claims if claim.verification_status == "verified"]
@@ -3310,7 +3352,11 @@ class ReportGeneratorAgent(Agent):
             )
         )
         for section in context.report.sections:
-            section_claims = [claim for claim in context.report.claims if claim.id in section.claim_ids]
+            section_claims = [
+                claim
+                for claim in context.report.claims
+                if claim.id in section.claim_ids and claim.verification_status != "rejected"
+            ]
             citation_source_ids = []
             for claim in section_claims:
                 citation_source_ids.extend(claim.evidence_source_ids)

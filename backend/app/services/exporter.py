@@ -201,7 +201,7 @@ def _unique(items: list[str]) -> list[str]:
 
 def _claims_for_section(report: AccountReport, section: ReportSection) -> list[Claim]:
     claim_ids = set(section.claim_ids)
-    return [claim for claim in report.claims if claim.id in claim_ids]
+    return [claim for claim in report.claims if claim.id in claim_ids and claim.verification_status != "rejected"]
 
 
 def _citation_ids_for_section(report: AccountReport, section: ReportSection) -> list[str]:
