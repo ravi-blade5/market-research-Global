@@ -4,6 +4,7 @@ param(
   [string]$Bucket = "$ProjectId-market-research-artifacts",
   [string]$ArtifactRepo = "market-research",
   [string]$ServiceAccountName = "market-research-runner",
+  [string]$TasksQueue = "market-research-runs",
   [string]$SqlInstance = "market-research-db",
   [string]$Database = "market_research",
   [string]$DbUser = "market_research_app"
@@ -73,6 +74,18 @@ if (-not $bucketExists) {
   gcloud storage buckets create "gs://$Bucket" --project $ProjectId --location $Region --uniform-bucket-level-access
 }
 
+$queueExists = Test-GcloudCommand { gcloud tasks queues describe $TasksQueue --location $Region --project $ProjectId }
+if (-not $queueExists) {
+  gcloud tasks queues create $TasksQueue `
+    --location $Region `
+    --max-concurrent-dispatches 2 `
+    --max-dispatches-per-second 0.2 `
+    --max-attempts 10 `
+    --min-backoff 60s `
+    --max-backoff 900s `
+    --project $ProjectId
+}
+
 $sqlExists = Test-GcloudCommand { gcloud sql instances describe $SqlInstance --project $ProjectId }
 if (-not $sqlExists) {
   gcloud sql instances create $SqlInstance `
@@ -91,6 +104,7 @@ if (-not $databaseExists) {
 }
 
 $passwordSecret = "DATABASE_PASSWORD"
+$taskTokenSecret = "TASK_DISPATCH_TOKEN"
 $existingPassword = $null
 try {
   $existingPassword = gcloud secrets versions access latest --secret $passwordSecret --project $ProjectId 2>$null
@@ -129,9 +143,36 @@ if (-not $userExists -and $dbPassword) {
   gcloud sql users create $DbUser --instance $SqlInstance --password $dbPassword --project $ProjectId
 }
 
+$existingTaskToken = $null
+try {
+  $existingTaskToken = gcloud secrets versions access latest --secret $taskTokenSecret --project $ProjectId 2>$null
+} catch {
+  $existingTaskToken = $null
+}
+if (-not $existingTaskToken) {
+  $bytes = New-Object byte[] 32
+  $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+  try {
+    $rng.GetBytes($bytes)
+  } finally {
+    $rng.Dispose()
+  }
+  $taskToken = [Convert]::ToBase64String($bytes).TrimEnd("=") -replace "[+/]", "T"
+  $temp = New-TemporaryFile
+  Set-Content -LiteralPath $temp -Value $taskToken -NoNewline
+  $taskSecretExists = Test-GcloudCommand { gcloud secrets describe $taskTokenSecret --project $ProjectId }
+  if (-not $taskSecretExists) {
+    gcloud secrets create $taskTokenSecret --replication-policy automatic --data-file $temp --project $ProjectId
+  } else {
+    gcloud secrets versions add $taskTokenSecret --data-file $temp --project $ProjectId
+  }
+  Remove-Item -LiteralPath $temp -Force
+}
+
 Write-Host "GCP baseline ready."
 Write-Host "Project: $ProjectId"
 Write-Host "Region: $Region"
 Write-Host "Service account: $saEmail"
 Write-Host "Bucket: gs://$Bucket"
 Write-Host "Cloud SQL: $ProjectId`:$Region`:$SqlInstance"
+Write-Host "Cloud Tasks queue: $TasksQueue"

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
 from fastapi.responses import FileResponse
 
 from app.config import settings
 from app.models import DrilldownRequest, DrilldownRun, ResearchRunCreate
 from app.services.orchestrator import ResearchOrchestrator
 from app.services.report_chat import ReportChatService
+from app.services.task_dispatcher import RunTaskDispatcher, should_use_cloud_tasks
 from app.storage.factory import create_run_store
 from app.storage.gcs_artifacts import GCSArtifactStore
 
@@ -15,13 +16,29 @@ store = create_run_store(settings)
 orchestrator = ResearchOrchestrator(settings, store)
 report_chat = ReportChatService(settings)
 artifact_store = GCSArtifactStore(settings.gcs_artifact_bucket) if settings.artifact_backend.lower() == "gcs" and settings.gcs_artifact_bucket else None
+task_dispatcher = RunTaskDispatcher(settings) if should_use_cloud_tasks(settings) else None
 
 
 @router.post("/runs")
 async def create_run(request: ResearchRunCreate, background_tasks: BackgroundTasks):
     run = orchestrator.create_run(request)
-    background_tasks.add_task(orchestrator.execute_run, run.id)
+    if task_dispatcher:
+        task_name = task_dispatcher.enqueue_run(run.id)
+        run.run_notes.append(f"Dispatched through Cloud Tasks: {task_name}")
+        store.save(run)
+    else:
+        background_tasks.add_task(orchestrator.execute_run, run.id)
     return run
+
+
+@router.post("/runs/{run_id}/execute-task")
+async def execute_run_task(run_id: str, x_task_dispatch_token: str | None = Header(default=None)):
+    if not settings.task_dispatch_token or x_task_dispatch_token != settings.task_dispatch_token:
+        raise HTTPException(status_code=403, detail="Invalid task dispatch token")
+    try:
+        return await orchestrator.execute_run(run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/runs/{run_id}/execute")
@@ -191,7 +208,10 @@ async def provider_status():
         "apify_actor_id": settings.apify_actor_id,
         "apify_max_crawl_pages": settings.apify_max_crawl_pages,
         "agent_parallelism": settings.agent_parallelism,
-        "run_execution": "fastapi_background_with_resumable_agent_checkpoints",
+        "run_execution": settings.run_execution_backend,
+        "cloud_tasks_queue": settings.cloud_tasks_queue,
+        "cloud_tasks_location": settings.cloud_tasks_location,
+        "task_dispatch_token_loaded": bool(settings.task_dispatch_token),
         "run_store_backend": settings.run_store_backend,
         "artifact_backend": settings.artifact_backend,
         "gcs_artifact_bucket": settings.gcs_artifact_bucket,

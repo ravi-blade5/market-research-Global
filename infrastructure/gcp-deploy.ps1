@@ -3,6 +3,7 @@ param(
   [string]$Region = "us-central1",
   [string]$Bucket = "$ProjectId-market-research-artifacts",
   [string]$ServiceAccountName = "market-research-runner",
+  [string]$TasksQueue = "market-research-runs",
   [string]$SqlInstance = "market-research-db",
   [string]$Database = "market_research",
   [string]$DbUser = "market_research_app",
@@ -26,6 +27,13 @@ gcloud config set project $ProjectId | Out-Null
 
 $saEmail = "$ServiceAccountName@$ProjectId.iam.gserviceaccount.com"
 $connectionName = "$ProjectId`:$Region`:$SqlInstance"
+$existingApiUrl = ""
+try {
+  $existingApiUrl = gcloud run services describe $ApiService --region $Region --project $ProjectId --format "value(status.url)" 2>$null
+} catch {
+  $existingApiUrl = ""
+}
+$publicBaseUrl = if ($existingApiUrl) { $existingApiUrl } else { "https://$ApiService-493637235399.$Region.run.app" }
 $dbPassword = gcloud secrets versions access latest --secret DATABASE_PASSWORD --project $ProjectId
 $databaseUrl = "postgresql://$DbUser`:$dbPassword@/$Database`?host=/cloudsql/$connectionName"
 $temp = New-TemporaryFile
@@ -49,10 +57,13 @@ gcloud run deploy $ApiService `
   --cpu 2 `
   --timeout 3600 `
   --concurrency 10 `
-  --set-env-vars "APP_ENV=gcp,RUN_STORE_BACKEND=postgres,ARTIFACT_BACKEND=gcs,GCP_PROJECT_ID=$ProjectId,GCP_REGION=$Region,GCS_ARTIFACT_BUCKET=$Bucket,DATA_DIR=/tmp/data,ALLOW_LIVE_PROVIDERS=true,AGENT_PARALLELISM=4" `
-  --set-secrets "DATABASE_URL=DATABASE_URL:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,FIRECRAWL_API_KEY=FIRECRAWL_API_KEY:latest,APIFY_API_TOKEN=APIFY_API_TOKEN:latest"
+  --set-env-vars "APP_ENV=gcp,RUN_STORE_BACKEND=postgres,ARTIFACT_BACKEND=gcs,RUN_EXECUTION_BACKEND=cloud_tasks,PUBLIC_BASE_URL=$publicBaseUrl,GCP_PROJECT_ID=$ProjectId,GCP_REGION=$Region,CLOUD_TASKS_LOCATION=$Region,CLOUD_TASKS_QUEUE=$TasksQueue,GCS_ARTIFACT_BUCKET=$Bucket,DATA_DIR=/tmp/data,ALLOW_LIVE_PROVIDERS=true,AGENT_PARALLELISM=4" `
+  --set-secrets "DATABASE_URL=DATABASE_URL:latest,TASK_DISPATCH_TOKEN=TASK_DISPATCH_TOKEN:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,FIRECRAWL_API_KEY=FIRECRAWL_API_KEY:latest,APIFY_API_TOKEN=APIFY_API_TOKEN:latest"
 
 $apiUrl = gcloud run services describe $ApiService --region $Region --project $ProjectId --format "value(status.url)"
+if ($apiUrl -ne $publicBaseUrl) {
+  gcloud run services update $ApiService --region $Region --project $ProjectId --update-env-vars "PUBLIC_BASE_URL=$apiUrl"
+}
 
 gcloud run deploy $WebService `
   --source frontend `

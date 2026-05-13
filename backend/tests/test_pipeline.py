@@ -6,6 +6,7 @@ from app.brand import BRAND_COLORS, SINGLE_COLOR_HEX
 from app.config import Settings
 from app.models import FreshnessWindow, ResearchMode, ResearchRunCreate
 from app.services.orchestrator import ResearchOrchestrator
+from app.services.task_dispatcher import should_use_cloud_tasks
 from app.storage.local_store import LocalRunStore
 
 
@@ -54,3 +55,9 @@ def test_local_store_delete_removes_run_artifacts_and_evidence_rows(tmp_path):
     assert store.get(completed.id) is None
     assert not artifact_dir.exists()
     assert store.evidence_tables.table_counts(completed.id) == {}
+
+
+def test_cloud_tasks_backend_detection():
+    assert should_use_cloud_tasks(Settings(run_execution_backend="cloud_tasks")) is True
+    assert should_use_cloud_tasks(Settings(run_execution_backend="tasks")) is True
+    assert should_use_cloud_tasks(Settings(run_execution_backend="background_tasks")) is False

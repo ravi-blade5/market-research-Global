@@ -23,12 +23,14 @@ Current local hardening:
 - `ResearchOrchestrator.execute_run()` now resumes from completed agent checkpoints instead of always discarding prior progress.
 - `GET /api/reports/{run_id}/evidence-tables` exposes table counts and queryable evidence rows.
 - `POST /api/reports/{run_id}/chat` retrieves rows from the DuckDB evidence mart and, when live providers are enabled, uses OpenAI embeddings for semantic search and `gpt-5.4-mini` to answer strictly from retrieved rows plus safe aggregate summaries.
+- GCP mode uses `RUN_EXECUTION_BACKEND=cloud_tasks`: `POST /api/runs` persists the run and enqueues a Cloud Tasks callback to `POST /api/runs/{run_id}/execute-task`.
+- The Cloud Tasks callback is protected by `TASK_DISPATCH_TOKEN` in Secret Manager. Cloud Tasks retries are safe because the orchestrator persists completed agent checkpoints and resumes already-completed groups.
 
 Production follow-ups:
 
 - Use `infrastructure/gcp-setup.ps1` to enable APIs, create the service account, Artifact Registry repo, GCS bucket, Cloud SQL instance/database/user, and baseline IAM.
 - Use `infrastructure/gcp-sync-secrets.ps1` to sync `OPENAI_API_KEY`, `FIRECRAWL_API_KEY`, and `APIFY_API_TOKEN` from `backend/.env` into Secret Manager.
 - Use `infrastructure/gcp-deploy.ps1` to deploy the API and web Cloud Run services.
-- Add Cloud Workflows for Deep Dive orchestration, using the persisted agent checkpoint state as the handoff contract.
-- Add Cloud Tasks queues for agent workers and export QA; Cloud Run should receive task callbacks instead of relying on FastAPI `BackgroundTasks`.
+- Cloud Tasks queue default: `market-research-runs`, configured with low dispatch rate and retry backoff for quality-first Deep Dive execution.
+- Future refinement: split each agent wave into separate Cloud Tasks/Workflows steps. Current Cloud Tasks execution is durable at run level and resumes from checkpoints on retry.
 - Add a shared access token or IAP when moving beyond prototype.

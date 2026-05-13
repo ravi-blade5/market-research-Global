@@ -15,6 +15,12 @@ class Settings(BaseSettings):
     gcp_region: str = "us-central1"
     gcs_artifact_bucket: str | None = None
     cors_allow_origins: str = "*"
+    run_execution_backend: str = "background_tasks"
+    public_base_url: str | None = None
+    cloud_tasks_queue: str = "market-research-runs"
+    cloud_tasks_location: str = "us-central1"
+    cloud_tasks_dispatch_deadline_seconds: int = 1800
+    task_dispatch_token: str | None = None
     openai_api_key: str | None = None
     firecrawl_api_key: str | None = None
     apify_api_token: str | None = None
