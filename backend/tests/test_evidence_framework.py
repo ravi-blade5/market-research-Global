@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 
 from pptx import Presentation
 
@@ -87,6 +88,67 @@ def test_source_tier_inference_and_allowed_uses():
     assert "announced_partnership" in press_release.allowed_uses
     assert careers_page.source_tier == SourceTier.tier_4_directional_signal
     assert "hiring_signal" in careers_page.allowed_uses
+
+
+def test_recency_sensitive_sections_exclude_2024_baseline_when_recent_sources_exist(tmp_path):
+    context = _context(tmp_path)
+    context.report.generated_at = datetime(2026, 5, 13, tzinfo=timezone.utc)
+    stale_source = pipeline._enrich_source(
+        EvidenceSource(
+            url="https://example.com/press-releases/2025/1/company-reports-full-year-results-2024",
+            title="BenchmarkCo reports fourth quarter results and full-year results 2024",
+            publisher="BenchmarkCo",
+            credibility=SourceCredibility.company_page,
+            credibility_score=0.82,
+        )
+    )
+    recent_source = pipeline._enrich_source(
+        EvidenceSource(
+            url="https://example.com/press-releases/2026/2/company-launches-ai-investment-program",
+            title="BenchmarkCo launches AI investment program",
+            publisher="BenchmarkCo",
+            credibility=SourceCredibility.company_page,
+            credibility_score=0.82,
+        )
+    )
+    context.report.sources.extend([stale_source, recent_source])
+
+    ranked = pipeline._rank_source_ids_for_section(
+        context,
+        [stale_source.id, recent_source.id],
+        "it_spend",
+        include_stale_if_needed=False,
+    )
+
+    assert ranked == [recent_source.id]
+    assert pipeline._source_is_stale_for_section(context, stale_source, "it_spend") is True
+    assert pipeline._source_is_stale_for_section(context, stale_source, "financial_trends") is False
+
+
+def test_stale_only_claims_are_flagged_for_freshness_sensitive_sections(tmp_path):
+    context = _context(tmp_path)
+    context.report.generated_at = datetime(2026, 5, 13, tzinfo=timezone.utc)
+    stale_source = pipeline._enrich_source(
+        EvidenceSource(
+            url="https://example.com/press-releases/2025/1/company-reports-full-year-results-2024",
+            title="BenchmarkCo reports fourth quarter results and full-year results 2024",
+            publisher="BenchmarkCo",
+            credibility=SourceCredibility.company_page,
+            credibility_score=0.82,
+        )
+    )
+    context.report.sources.append(stale_source)
+
+    claim_id = pipeline._add_claim(
+        context,
+        "recent_investments",
+        "BenchmarkCo has a recent investment signal based only on the 2024 full-year report.",
+        "fact",
+        [stale_source.id],
+        0.82,
+    )
+
+    assert claim_id in pipeline._stale_sensitive_claim_ids(context)
 
 
 def test_add_claim_creates_evidence_signal_and_dedupes(tmp_path):

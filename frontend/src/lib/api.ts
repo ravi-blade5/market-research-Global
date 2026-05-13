@@ -63,6 +63,7 @@ export interface EvidenceSource {
   url: string;
   title: string;
   publisher?: string | null;
+  published_at?: string | null;
   credibility: string;
   credibility_score: number;
   source_tier?: string | null;

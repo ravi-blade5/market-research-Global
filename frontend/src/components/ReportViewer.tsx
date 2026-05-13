@@ -17,6 +17,20 @@ interface ReportViewerProps {
 }
 
 const sourceIdPattern = /src_[0-9a-f]{8,16}/g;
+const yearPattern = /(?<!\d)(20[0-3]\d)(?!\d)/g;
+const isoDatePattern = /(?<!\d)(20[0-3]\d)[-/](0?[1-9]|1[0-2])[-/](0?[1-9]|[12]\d|3[01])(?!\d)/;
+const urlYearMonthPattern = /\/(20[0-3]\d)\/(0?[1-9]|1[0-2])(?:\/|$)/;
+const recencySensitiveSections = new Set([
+  "recent_investments",
+  "partnerships_deals",
+  "account_priorities",
+  "it_spend",
+  "key_signals",
+  "outsourcing_vendor",
+  "ai_strategy",
+  "hcltech_penetration",
+  "consensus"
+]);
 const clientTextReplacements: Record<string, string> = {
   "Company identity, official-source discovery, and report metadata are configured.":
     "Company overview remains partial until official company, investor, or filing evidence is extracted into exact facts.",
@@ -46,8 +60,63 @@ const clientTextReplacements: Record<string, string> = {
     "Exact R&D value not found in the extracted official financial evidence for this run."
 };
 
+function inferSourceDate(source: EvidenceSource) {
+  const explicitDate = source.published_at ? new Date(source.published_at) : null;
+  if (explicitDate && !Number.isNaN(explicitDate.getTime())) {
+    return explicitDate;
+  }
+  const combined = `${source.title} ${source.url}`;
+  const isoMatch = combined.match(isoDatePattern);
+  if (isoMatch) {
+    return new Date(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3]));
+  }
+  const urlMatch = source.url.match(urlYearMonthPattern);
+  if (urlMatch) {
+    return new Date(Number(urlMatch[1]), Number(urlMatch[2]) - 1, 1);
+  }
+  return null;
+}
+
+function sourceTopicYears(source: EvidenceSource) {
+  const titleYears = Array.from(source.title.matchAll(yearPattern), (match) => Number(match[1]));
+  if (titleYears.length > 0) {
+    return titleYears;
+  }
+  const slug = source.url.split("#")[0].replace(/\/$/, "").split("/").pop() ?? "";
+  return Array.from(slug.matchAll(yearPattern), (match) => Number(match[1]));
+}
+
+function monthDelta(later: Date, earlier: Date) {
+  return Math.max(0, (later.getFullYear() - earlier.getFullYear()) * 12 + later.getMonth() - earlier.getMonth());
+}
+
+function isStaleForSection(source: EvidenceSource, sectionId?: string) {
+  if (!sectionId || !recencySensitiveSections.has(sectionId) || source.url.startsWith("system://")) {
+    return false;
+  }
+  const now = new Date();
+  const topicYears = sourceTopicYears(source);
+  if (topicYears.length > 0 && Math.max(...topicYears) <= now.getFullYear() - 2) {
+    return true;
+  }
+  const date = inferSourceDate(source);
+  return date ? monthDelta(now, date) > 12 : false;
+}
+
+function rankSources(sources: EvidenceSource[], sectionId?: string) {
+  return [...sources].sort((a, b) => {
+    const aStale = isStaleForSection(a, sectionId) ? 1 : 0;
+    const bStale = isStaleForSection(b, sectionId) ? 1 : 0;
+    if (aStale !== bStale) return aStale - bStale;
+    const aDate = inferSourceDate(a)?.getTime() ?? 0;
+    const bDate = inferSourceDate(b)?.getTime() ?? 0;
+    if (aDate !== bDate) return bDate - aDate;
+    return b.credibility_score - a.credibility_score;
+  });
+}
+
 function sourceNumberMap(sources: EvidenceSource[]) {
-  const publicSources = sources.filter((source) => source.url.startsWith("http"));
+  const publicSources = rankSources(sources.filter((source) => source.url.startsWith("http")));
   return new Map(publicSources.map((source, index) => [source.id, index + 1]));
 }
 
@@ -101,13 +170,15 @@ function tableMix(rows: EvidenceTableRow[]) {
   return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
 }
 
-function sourceChips(claims: Claim[], sources: EvidenceSource[], sourceNumbers: Map<string, number>) {
+function sourceChips(claims: Claim[], sources: EvidenceSource[], sourceNumbers: Map<string, number>, sectionId?: string) {
   const sourceById = new Map(sources.map((source) => [source.id, source]));
-  const ids = Array.from(new Set(claims.flatMap((claim) => claim.evidence_source_ids))).slice(0, 6);
-  return ids
+  const candidateSources = Array.from(new Set(claims.flatMap((claim) => claim.evidence_source_ids)))
     .map((sourceId) => sourceById.get(sourceId))
     .filter((source): source is EvidenceSource => Boolean(source))
-    .filter((source) => source.url.startsWith("http"))
+    .filter((source) => source.url.startsWith("http"));
+  const nonStaleSources = candidateSources.filter((source) => !isStaleForSection(source, sectionId));
+  const displaySources = rankSources(nonStaleSources.length > 0 ? nonStaleSources : candidateSources, sectionId).slice(0, 6);
+  return displaySources
     .map((source) => (
       <a className="source-chip" href={source.url} key={source.id} rel="noreferrer" target="_blank" title={source.title}>
         {sourceLabel(source, sourceNumbers)}
@@ -142,7 +213,7 @@ export function ReportViewer({ report }: ReportViewerProps) {
 
   const activeReport = report;
   const sourceNumbers = sourceNumberMap(report.sources);
-  const publicSources = report.sources.filter((source) => source.url.startsWith("http"));
+  const publicSources = rankSources(report.sources.filter((source) => source.url.startsWith("http")));
   const evidenceSignals = report.evidence_signals ?? [];
   const evidenceTableRows = report.evidence_table_rows ?? [];
   const evidenceSignalMix = signalMix(evidenceSignals);
@@ -290,7 +361,7 @@ export function ReportViewer({ report }: ReportViewerProps) {
             const visibleBullets = isExpanded ? bullets : bullets.slice(0, 2);
             const hiddenBulletCount = bullets.length - visibleBullets.length;
             const hasExpandableContent = summary.length > 280 || hiddenBulletCount > 0;
-            const chips = sourceChips(claims, report.sources, sourceNumbers);
+            const chips = sourceChips(claims, report.sources, sourceNumbers, section.id);
             return (
               <article className={`report-section${isExpanded ? " expanded" : ""}`} id={section.id} key={section.id}>
                 <div className="section-heading">
@@ -365,7 +436,8 @@ export function ReportViewer({ report }: ReportViewerProps) {
                         {sourceChips(
                           [{ id: signal.id, text: signal.detail, section_id: signal.section_id, claim_type: "inference", evidence_source_ids: signal.source_ids, confidence_score: signal.confidence_score, verification_status: "verified" }],
                           report.sources,
-                          sourceNumbers
+                          sourceNumbers,
+                          signal.section_id
                         )}
                       </div>
                     </div>
@@ -402,7 +474,8 @@ export function ReportViewer({ report }: ReportViewerProps) {
                         {sourceChips(
                           [{ id: row.id, text: row.detail, section_id: row.section_id ?? "evidence", claim_type: "inference", evidence_source_ids: row.source_ids, confidence_score: row.confidence_score, verification_status: "verified" }],
                           report.sources,
-                          sourceNumbers
+                          sourceNumbers,
+                          row.section_id ?? undefined
                         )}
                       </div>
                     </div>
@@ -421,7 +494,7 @@ export function ReportViewer({ report }: ReportViewerProps) {
                 <div>
                   <strong>{claim.claim_type}</strong>
                   <p>{cleanText(claim.text, sourceNumbers)}</p>
-                  <div className="evidence-sources">{sourceChips([claim], report.sources, sourceNumbers)}</div>
+                  <div className="evidence-sources">{sourceChips([claim], report.sources, sourceNumbers, claim.section_id)}</div>
                 </div>
                 <span className={`section-status ${claim.verification_status}`}>{claim.verification_status}</span>
               </div>

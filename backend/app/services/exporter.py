@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -19,6 +20,9 @@ from app.models import AccountReport, Artifact, Claim, EvidenceSource, EvidenceT
 
 
 SOURCE_ID_RE = re.compile(r"src_[0-9a-f]{8,16}")
+YEAR_RE = re.compile(r"(?<!\d)(20[0-3]\d)(?!\d)")
+ISO_DATE_RE = re.compile(r"(?<!\d)(20[0-3]\d)[-/](0?[1-9]|1[0-2])[-/](0?[1-9]|[12]\d|3[01])(?!\d)")
+URL_YEAR_MONTH_RE = re.compile(r"/(20[0-3]\d)/(0?[1-9]|1[0-2])(?:/|$)")
 SCAFFOLD_TERMS = (
     "schema implemented",
     "hooks are ready",
@@ -107,13 +111,43 @@ def _rl_color(name: str) -> colors.HexColor:
     return colors.HexColor(_hex(name))
 
 
+def _source_inferred_datetime(source: EvidenceSource) -> datetime | None:
+    if source.published_at:
+        try:
+            parsed = datetime.fromisoformat(source.published_at.replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    combined = f"{source.title} {source.url}"
+    match = ISO_DATE_RE.search(combined)
+    if match:
+        year, month, day = (int(part) for part in match.groups())
+        return datetime(year, month, day, tzinfo=timezone.utc)
+    match = URL_YEAR_MONTH_RE.search(source.url)
+    if match:
+        year, month = (int(part) for part in match.groups())
+        return datetime(year, month, 1, tzinfo=timezone.utc)
+    return None
+
+
+def _rank_public_sources(sources: list[EvidenceSource]) -> list[EvidenceSource]:
+    def sort_key(source: EvidenceSource) -> tuple[float, int, float, str]:
+        source_date = _source_inferred_datetime(source)
+        date_score = source_date.timestamp() if source_date else 0.0
+        topic_years = [int(year) for year in YEAR_RE.findall(source.title or "")]
+        year_score = max(topic_years) if topic_years else 0
+        return (-date_score, -year_score, -source.credibility_score, source.title.lower())
+
+    return sorted([source for source in sources if source.url.startswith("http")], key=sort_key)
+
+
 def _source_numbers(report: AccountReport) -> dict[str, int]:
-    numbered_sources = [source for source in report.sources if source.url.startswith("http")]
+    numbered_sources = _rank_public_sources(report.sources)
     return {source.id: index + 1 for index, source in enumerate(numbered_sources)}
 
 
 def _public_sources(report: AccountReport) -> list[EvidenceSource]:
-    return [source for source in report.sources if source.url.startswith("http")]
+    return _rank_public_sources(report.sources)
 
 
 def _clean_text(text: str, source_numbers: dict[str, int]) -> str:

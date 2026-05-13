@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from datetime import datetime, timezone
 
 from app.agents.base import Agent, AgentContext
 from app.brand import css_tokens
@@ -48,6 +49,51 @@ REPORT_SECTION_ORDER = [
 
 
 SOURCE_TOKEN_RE = re.compile(r"src_[0-9a-f]{8,16}")
+YEAR_RE = re.compile(r"(?<!\d)(20[0-3]\d)(?!\d)")
+ISO_DATE_RE = re.compile(r"(?<!\d)(20[0-3]\d)[-/](0?[1-9]|1[0-2])[-/](0?[1-9]|[12]\d|3[01])(?!\d)")
+URL_YEAR_MONTH_RE = re.compile(r"/(20[0-3]\d)/(0?[1-9]|1[0-2])(?:/|$)")
+MONTH_DATE_RE = re.compile(
+    r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+([0-3]?\d),?\s+(20[0-3]\d)\b",
+    re.IGNORECASE,
+)
+
+MONTHS = {
+    "jan": 1,
+    "january": 1,
+    "feb": 2,
+    "february": 2,
+    "mar": 3,
+    "march": 3,
+    "apr": 4,
+    "april": 4,
+    "may": 5,
+    "jun": 6,
+    "june": 6,
+    "jul": 7,
+    "july": 7,
+    "aug": 8,
+    "august": 8,
+    "sep": 9,
+    "september": 9,
+    "oct": 10,
+    "october": 10,
+    "nov": 11,
+    "november": 11,
+    "dec": 12,
+    "december": 12,
+}
+
+RECENCY_SENSITIVE_SECTIONS = {
+    "recent_investments",
+    "partnerships_deals",
+    "account_priorities",
+    "it_spend",
+    "key_signals",
+    "outsourcing_vendor",
+    "ai_strategy",
+    "hcltech_penetration",
+    "consensus",
+}
 
 
 SOURCE_TIER_LABELS = {
@@ -115,6 +161,149 @@ TABLE_BY_SECTION = {
 
 def _source_haystack(source: EvidenceSource) -> str:
     return f"{source.title} {source.url} {source.publisher or ''}".lower()
+
+
+def _coerce_source_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    try:
+        parsed = datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        pass
+    match = ISO_DATE_RE.search(cleaned)
+    if match:
+        year, month, day = (int(part) for part in match.groups())
+        return datetime(year, month, day, tzinfo=timezone.utc)
+    match = MONTH_DATE_RE.search(cleaned)
+    if match:
+        month_name, day, year = match.groups()
+        return datetime(int(year), MONTHS[month_name.lower()[:3]], max(1, int(day)), tzinfo=timezone.utc)
+    return None
+
+
+def _source_inferred_datetime(source: EvidenceSource) -> datetime | None:
+    explicit = _coerce_source_datetime(source.published_at)
+    if explicit:
+        return explicit
+    combined = f"{source.title} {source.url}"
+    match = ISO_DATE_RE.search(combined)
+    if match:
+        year, month, day = (int(part) for part in match.groups())
+        return datetime(year, month, day, tzinfo=timezone.utc)
+    match = URL_YEAR_MONTH_RE.search(source.url)
+    if match:
+        year, month = (int(part) for part in match.groups())
+        return datetime(year, month, 1, tzinfo=timezone.utc)
+    match = MONTH_DATE_RE.search(combined)
+    if match:
+        month_name, day, year = match.groups()
+        return datetime(int(year), MONTHS[month_name.lower()[:3]], max(1, int(day)), tzinfo=timezone.utc)
+    return None
+
+
+def _source_topic_years(source: EvidenceSource) -> list[int]:
+    title_years = [int(year) for year in YEAR_RE.findall(source.title or "")]
+    if title_years:
+        return title_years
+    slug = source.url.split("#", 1)[0].rstrip("/").rsplit("/", 1)[-1].replace("-", " ").replace("_", " ")
+    return [int(year) for year in YEAR_RE.findall(slug)]
+
+
+def _as_of_datetime(context: AgentContext) -> datetime:
+    raw = context.report.generated_at or context.run.created_at
+    return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+
+
+def _recency_cutoff_months(context: AgentContext) -> int:
+    return 12
+
+
+def _month_delta(later: datetime, earlier: datetime) -> int:
+    return max(0, (later.year - earlier.year) * 12 + (later.month - earlier.month))
+
+
+def _is_recency_sensitive_section(section_id: str) -> bool:
+    return section_id in RECENCY_SENSITIVE_SECTIONS
+
+
+def _source_is_stale_for_section(context: AgentContext, source: EvidenceSource, section_id: str) -> bool:
+    if not _is_recency_sensitive_section(section_id):
+        return False
+    if source.url.startswith("system://") or source.credibility == SourceCredibility.system:
+        return False
+    as_of = _as_of_datetime(context)
+    topic_years = _source_topic_years(source)
+    if topic_years and max(topic_years) <= as_of.year - 2:
+        return True
+    source_date = _source_inferred_datetime(source)
+    if not source_date:
+        return False
+    return _month_delta(as_of, source_date) > _recency_cutoff_months(context)
+
+
+def _source_recency_status(context: AgentContext, source: EvidenceSource, section_id: str | None = None) -> str:
+    if source.url.startswith("system://") or source.credibility == SourceCredibility.system:
+        return "system"
+    source_date = _source_inferred_datetime(source)
+    topic_years = _source_topic_years(source)
+    if section_id and _source_is_stale_for_section(context, source, section_id):
+        return "stale_baseline"
+    if source_date:
+        age_months = _month_delta(_as_of_datetime(context), source_date)
+        return "recent" if age_months <= _recency_cutoff_months(context) else "historical_baseline"
+    if topic_years:
+        return "recent" if max(topic_years) >= _as_of_datetime(context).year - 1 else "historical_baseline"
+    return "undated"
+
+
+def _rank_source_ids_for_section(
+    context: AgentContext,
+    source_ids: list[str] | None,
+    section_id: str,
+    *,
+    limit: int | None = None,
+    include_stale_if_needed: bool = True,
+) -> list[str]:
+    if source_ids is None:
+        return []
+    source_by_id = {source.id: source for source in context.report.sources}
+    deduped = _dedupe_preserve_order([source_id for source_id in source_ids if source_id in source_by_id])
+    if not deduped:
+        return []
+
+    def sort_key(source_id: str) -> tuple[int, float, int, float, str]:
+        source = source_by_id[source_id]
+        source_date = _source_inferred_datetime(source)
+        date_score = source_date.timestamp() if source_date else 0.0
+        tier = source.source_tier or _infer_source_tier(source)
+        tier_rank = {
+            SourceTier.tier_1_official_financial: 0,
+            SourceTier.tier_2_official_company: 1,
+            SourceTier.tier_3_reputable_context: 2,
+            SourceTier.tier_4_directional_signal: 3,
+            SourceTier.system: 4,
+            SourceTier.rejected: 5,
+        }.get(tier, 3)
+        if _source_is_stale_for_section(context, source, section_id):
+            bucket = 4
+        elif _source_recency_status(context, source, section_id) == "undated":
+            bucket = 2
+        elif source.url.startswith("system://"):
+            bucket = 5
+        else:
+            bucket = 0
+        return (bucket, -date_score, tier_rank, -source.credibility_score, source.title.lower())
+
+    ranked = sorted(deduped, key=sort_key)
+    if _is_recency_sensitive_section(section_id):
+        non_stale = [source_id for source_id in ranked if not _source_is_stale_for_section(context, source_by_id[source_id], section_id)]
+        if non_stale or not include_stale_if_needed:
+            ranked = non_stale
+    return ranked[:limit] if limit else ranked
 
 
 def _infer_source_tier(source: EvidenceSource) -> SourceTier:
@@ -196,7 +385,7 @@ def _system_source() -> EvidenceSource:
 
 def _add_claim(context: AgentContext, section_id: str, text: str, claim_type: str, source_ids: list[str], confidence: float) -> str:
     normalized_text = " ".join(SOURCE_TOKEN_RE.sub("", text).replace("[]", "").split())
-    normalized_sources = list(dict.fromkeys(source_ids))
+    normalized_sources = _rank_source_ids_for_section(context, list(dict.fromkeys(source_ids)), section_id, limit=12)
     source_set = set(normalized_sources)
     for existing in context.report.claims:
         existing_text = " ".join(SOURCE_TOKEN_RE.sub("", existing.text).replace("[]", "").split())
@@ -448,6 +637,9 @@ def refresh_evidence_tables(context: AgentContext) -> None:
                     "url": source.url,
                     "publisher": source.publisher,
                     "published_at": source.published_at,
+                    "inferred_source_date": _source_inferred_datetime(source).date().isoformat() if _source_inferred_datetime(source) else None,
+                    "topic_years": _source_topic_years(source),
+                    "recency_status": _source_recency_status(context, source),
                     "credibility": source.credibility.value,
                     "credibility_score": source.credibility_score,
                     "source_tier": tier.value,
@@ -532,6 +724,8 @@ def refresh_evidence_tables(context: AgentContext) -> None:
                     "claim_type": claim.claim_type,
                     "verification_status": claim.verification_status,
                     "confidence_score": claim.confidence_score,
+                    "freshness_sensitive": _is_recency_sensitive_section(claim.section_id),
+                    "stale_only_evidence": claim.id in _stale_sensitive_claim_ids(context),
                 },
                 source_ids=claim.evidence_source_ids,
                 claim_ids=[claim.id],
@@ -786,6 +980,20 @@ def _normalize_section_evidence_language(context: AgentContext, section: ReportS
     ]
     if section.status == "unavailable" and useful_claims:
         section.status = "partial"
+
+
+def _stale_sensitive_claim_ids(context: AgentContext) -> list[str]:
+    source_by_id = {source.id: source for source in context.report.sources}
+    stale_claims: list[str] = []
+    for claim in context.report.claims:
+        if claim.claim_type == "unavailable" or _is_policy_or_guardrail_claim(claim.text):
+            continue
+        if not _is_recency_sensitive_section(claim.section_id) or not claim.evidence_source_ids:
+            continue
+        linked_sources = [source_by_id[source_id] for source_id in claim.evidence_source_ids if source_id in source_by_id]
+        if linked_sources and all(_source_is_stale_for_section(context, source, claim.section_id) for source in linked_sources):
+            stale_claims.append(claim.id)
+    return stale_claims
 
 
 def _source_ids_from_claims(
@@ -1206,14 +1414,24 @@ async def _discover_many(
     return discovered
 
 
-def _evidence_payload(context: AgentContext, source_ids: list[str] | None = None) -> list[dict]:
-    source_filter = set(source_ids or [])
+def _evidence_payload(context: AgentContext, source_ids: list[str] | None = None, section_id: str | None = None) -> list[dict]:
     sources = context.report.sources
-    if source_filter:
+    source_filter = set(source_ids or [])
+    if source_ids is not None:
         sources = [source for source in sources if source.id in source_filter]
+    elif section_id and _is_recency_sensitive_section(section_id):
+        ranked_ids = _rank_source_ids_for_section(
+            context,
+            [source.id for source in context.report.sources],
+            section_id,
+            limit=60,
+            include_stale_if_needed=False,
+        )
+        source_filter = set(ranked_ids)
+        sources = [source for source in context.report.sources if source.id in source_filter]
     else:
         sources = sorted(sources, key=lambda source: (source.snapshot_id is None, source.url.startswith("system://")))
-    if not sources:
+    if not sources and source_ids is None:
         sources = context.report.sources[:10]
     claims_by_source: dict[str, list[str]] = {}
     for claim in context.report.claims:
@@ -1242,6 +1460,13 @@ def _evidence_payload(context: AgentContext, source_ids: list[str] | None = None
             "source_tier_label": SOURCE_TIER_LABELS.get(source.source_tier or _infer_source_tier(source), "Unclassified source"),
             "allowed_uses": source.allowed_uses or _allowed_uses_for_source(source),
             "source_use_policy": _source_use_policy(source),
+            "recency_status": _source_recency_status(context, source, section_id),
+            "inferred_source_date": _source_inferred_datetime(source).date().isoformat() if _source_inferred_datetime(source) else None,
+            "freshness_policy": (
+                "Freshness-sensitive section: use sources from the last 12 months when available; older 2024-style sources are historical baseline only."
+                if section_id and _is_recency_sensitive_section(section_id)
+                else "Baseline sources may be used where appropriate."
+            ),
             "snapshot_excerpt": _snapshot_excerpt(context, source.id),
             "related_existing_claims": claims_by_source.get(source.id, [])[:8],
             "related_evidence_signals": signals_by_source.get(source.id, [])[:8],
@@ -1260,6 +1485,11 @@ async def _synthesize_into_section(
     source_ids: list[str] | None = None,
 ) -> SynthesisResult:
     section = _section(context, section_id)
+    ranked_source_ids = (
+        _rank_source_ids_for_section(context, source_ids, section_id, limit=60, include_stale_if_needed=False)
+        if source_ids is not None
+        else None
+    )
     result = await context.providers.synthesis_provider().synthesize_section(
         company_name=context.run.company_name,
         section_id=section.id,
@@ -1267,8 +1497,16 @@ async def _synthesize_into_section(
         agent_name=agent.name,
         model=agent.model,
         reasoning_effort=agent.reasoning_effort,
-        evidence=_evidence_payload(context, source_ids),
-        instructions=instructions,
+        evidence=_evidence_payload(context, ranked_source_ids, section_id=section_id),
+        instructions=(
+            instructions
+            + (
+                "\nFreshness rule: for this freshness-sensitive section, use sources from the latest 12 months when available. "
+                "Treat older annual reports, FY/Q4 pages, and 2024-era material as historical baseline only; do not use them as primary support for recent investments, partnerships, IT-spend signals, AI moves, or account recommendations."
+                if _is_recency_sensitive_section(section_id)
+                else ""
+            )
+        ),
     )
     check_name = f"{section_id}_synthesis_call"
     _replace_quality_check(
@@ -2849,13 +3087,25 @@ class VerificationAgent(Agent):
             ),
         )
         source_ids = {source.id for source in context.report.sources}
+        source_by_id = {source.id: source for source in context.report.sources}
         blockers = []
+        stale_evidence_claims = []
         for claim in context.report.claims:
-            if claim.evidence_source_ids and all(source_id in source_ids for source_id in claim.evidence_source_ids):
+            valid_source_links = claim.evidence_source_ids and all(source_id in source_ids for source_id in claim.evidence_source_ids)
+            stale_only = False
+            if valid_source_links and claim.claim_type != "unavailable" and _is_recency_sensitive_section(claim.section_id) and not _is_policy_or_guardrail_claim(claim.text):
+                linked_sources = [source_by_id[source_id] for source_id in claim.evidence_source_ids if source_id in source_by_id]
+                stale_only = bool(linked_sources) and all(
+                    _source_is_stale_for_section(context, source, claim.section_id)
+                    for source in linked_sources
+                )
+            if valid_source_links and not stale_only:
                 claim.verification_status = "verified" if claim.claim_type != "unavailable" else "unavailable"
             else:
                 claim.verification_status = "rejected"
                 blockers.append(claim.id)
+                if stale_only:
+                    stale_evidence_claims.append(claim.id)
         refresh_evidence_tables(context)
         signal_count = len(context.report.evidence_signals)
         table_row_count = len(context.report.evidence_table_rows)
@@ -2884,6 +3134,19 @@ class VerificationAgent(Agent):
                 passed=not blockers,
                 severity="blocker" if blockers else "info",
                 message=f"{len(blockers)} claims missing accepted evidence." if blockers else "All claims have evidence records.",
+            )
+        )
+        _replace_quality_check(
+            context,
+            QualityCheck(
+                name="freshness_sensitive_evidence",
+                passed=not stale_evidence_claims,
+                severity="blocker" if stale_evidence_claims else "info",
+                message=(
+                    f"{len(stale_evidence_claims)} freshness-sensitive claims rely only on stale baseline sources; examples: {stale_evidence_claims[:8]}."
+                    if stale_evidence_claims
+                    else "Freshness-sensitive claims are supported by recent or undated non-stale evidence."
+                ),
             )
         )
         _replace_quality_check(
@@ -3051,7 +3314,13 @@ class ReportGeneratorAgent(Agent):
             citation_source_ids = []
             for claim in section_claims:
                 citation_source_ids.extend(claim.evidence_source_ids)
-            citation_source_ids = list(dict.fromkeys(citation_source_ids))
+            citation_source_ids = _rank_source_ids_for_section(
+                context,
+                list(dict.fromkeys(citation_source_ids)),
+                section.id,
+                limit=16,
+                include_stale_if_needed=False,
+            )
             bullets = _section_slide_bullets(context, section)
             speaker_notes = [
                 f"Claim {claim.id}: {claim.text}"
@@ -3106,6 +3375,7 @@ class ExportQAAgent(Agent):
             "source_tier_mix_preflight",
             "evidence_signal_preflight",
             "evidence_table_preflight",
+            "freshness_sensitive_evidence",
         }
         context.report.quality_checks = [check for check in context.report.quality_checks if check.name not in qa_check_names]
         has_deck = context.report.deck_spec is not None
@@ -3140,6 +3410,7 @@ class ExportQAAgent(Agent):
         signal_depth_ok = len(context.report.evidence_signals) >= signal_floor
         table_floor = (len(context.report.claims) + len(context.report.evidence_signals)) if context.report.claims else 0
         table_depth_ok = len(context.report.evidence_table_rows) >= table_floor
+        stale_sensitive_claims = _stale_sensitive_claim_ids(context)
         deep_research_checks = [check for check in context.report.quality_checks if check.name == "openai_deep_research_background"]
         deep_research_ok = bool(deep_research_checks and deep_research_checks[-1].passed) if context.run.mode == ResearchMode.deep else True
         reader_ready = not scaffold_sections
@@ -3223,6 +3494,16 @@ class ExportQAAgent(Agent):
                     passed=table_depth_ok,
                     severity="warning" if not table_depth_ok else "info",
                     message=f"{len(context.report.evidence_table_rows)} evidence table rows available; target floor is {table_floor} claim+signal rows.",
+                ),
+                QualityCheck(
+                    name="freshness_sensitive_evidence",
+                    passed=not stale_sensitive_claims,
+                    severity="blocker" if stale_sensitive_claims else "info",
+                    message=(
+                        f"{len(stale_sensitive_claims)} freshness-sensitive claims rely only on stale baseline sources; examples: {stale_sensitive_claims[:8]}."
+                        if stale_sensitive_claims
+                        else "Freshness-sensitive sections do not rely only on stale baseline sources."
+                    ),
                 ),
             ]
         )
