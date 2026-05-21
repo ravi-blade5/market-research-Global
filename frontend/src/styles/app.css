@@ -704,7 +704,7 @@ a {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
   gap: 12px;
-  align-items: start;
+  align-items: stretch;
   grid-auto-flow: dense;
   min-width: 0;
 }
@@ -712,9 +712,10 @@ a {
 .report-section {
   min-width: 0;
   max-width: 100%;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
-  align-content: start;
+  height: 100%;
   padding: 14px;
 }
 
@@ -820,7 +821,7 @@ a {
 
 .section-evidence {
   padding-top: 8px;
-  margin-top: 2px;
+  margin-top: auto;
   border-top: 1px solid var(--color-light-blue);
   color: var(--color-muted);
   font-size: 12px;
