@@ -52,6 +52,7 @@ function upsertBrowserTask(tasks: ResearchRun[], nextRun: ResearchRun) {
 
 export function App() {
   const [companyName, setCompanyName] = useState("Oracle Corporation");
+  const [department, setDepartment] = useState("");
   const [mode, setMode] = useState<ResearchMode>("deep");
   const [freshnessWindow, setFreshnessWindow] = useState<FreshnessWindow>("12m");
   const [run, setRun] = useState<ResearchRun | null>(null);
@@ -178,7 +179,7 @@ export function App() {
     setError(null);
     setReport(null);
     try {
-      const created = await createRun(companyName, mode, freshnessWindow);
+      const created = await createRun(companyName, mode, freshnessWindow, department);
       setRun(created);
       setBrowserTasks((current) => upsertBrowserTask(current, created));
       void refreshHistory();
@@ -235,10 +236,12 @@ export function App() {
 
       <RunForm
         companyName={companyName}
+        department={department}
         mode={mode}
         freshnessWindow={freshnessWindow}
         isSubmitting={isSubmitting}
         onCompanyNameChange={setCompanyName}
+        onDepartmentChange={setDepartment}
         onModeChange={setMode}
         onFreshnessWindowChange={setFreshnessWindow}
         onSubmit={startRun}

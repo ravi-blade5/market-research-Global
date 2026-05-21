@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     apify_max_crawl_pages: int = 20
     apify_wait_timeout_seconds: int = 300
     apify_dataset_item_limit: int = 30
+    apify_people_actor_id: str = "Vb6LZkh4EqRlR0Ka9"
+    apify_people_wait_timeout_seconds: int = 300
+    apify_people_dataset_item_limit: int = 50
     allow_live_providers: bool = False
     agent_parallelism: int = 4
 

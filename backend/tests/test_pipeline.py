@@ -79,6 +79,29 @@ def test_execute_next_wave_persists_checkpoint_before_completion(tmp_path):
     assert all(agent.status == "completed" for agent in completed.agents)
 
 
+def test_department_lens_is_optional_and_checkpointed(tmp_path):
+    settings = Settings(data_dir=tmp_path, allow_live_providers=False)
+    store = LocalRunStore(settings)
+    orchestrator = ResearchOrchestrator(settings, store)
+    run = orchestrator.create_run(
+        ResearchRunCreate(
+            company_name="LensCo",
+            department="Finance",
+            mode=ResearchMode.quick,
+            freshness_window=FreshnessWindow.six_months,
+        )
+    )
+
+    assert run.department == "Finance"
+    assert any(agent.name == "Department People Signal Agent" for agent in run.agents)
+
+    checkpoint = asyncio.run(orchestrator.execute_next_wave(run.id))
+
+    assert checkpoint.report is not None
+    assert checkpoint.report.department == "Finance"
+    assert any(section.id == "department_lens" and section.title == "Finance Department Lens" for section in checkpoint.report.sections)
+
+
 def test_cloud_tasks_backend_detection():
     assert should_use_cloud_tasks(Settings(run_execution_backend="cloud_tasks")) is True
     assert should_use_cloud_tasks(Settings(run_execution_backend="tasks")) is True

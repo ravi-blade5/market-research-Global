@@ -11,6 +11,7 @@ export interface AgentRun {
 export interface ResearchRun {
   id: string;
   company_name: string;
+  department?: string | null;
   mode: ResearchMode;
   freshness_window: FreshnessWindow;
   status: RunStatus;
@@ -28,6 +29,7 @@ export interface ResearchRun {
 export interface RunHistoryItem {
   id: string;
   company_name: string;
+  department?: string | null;
   mode: ResearchMode;
   freshness_window: FreshnessWindow;
   status: RunStatus;
@@ -144,6 +146,7 @@ export interface QualityCheck {
 export interface AccountReport {
   run_id: string;
   company_name: string;
+  department?: string | null;
   mode: ResearchMode;
   freshness_window: FreshnessWindow;
   sections: ReportSection[];
@@ -178,10 +181,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export async function createRun(companyName: string, mode: ResearchMode, freshnessWindow: FreshnessWindow) {
+export async function createRun(companyName: string, mode: ResearchMode, freshnessWindow: FreshnessWindow, department?: string) {
+  const trimmedDepartment = department?.trim();
   return request<ResearchRun>("/api/runs", {
     method: "POST",
-    body: JSON.stringify({ company_name: companyName, mode, freshness_window: freshnessWindow })
+    body: JSON.stringify({
+      company_name: companyName,
+      mode,
+      freshness_window: freshnessWindow,
+      department: trimmedDepartment || null
+    })
   });
 }
 

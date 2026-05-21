@@ -72,6 +72,7 @@ export function PendingTasks({
                   <small>
                     {task.mode} | {task.status} | {formatDate(task.completed_at ?? task.updated_at ?? task.created_at)}
                   </small>
+                  {task.department && <small>Department Lens: {task.department}</small>}
                 </span>
               </button>
               <div className="pending-task-progress" aria-label={`Task progress ${task.progress}%`}>

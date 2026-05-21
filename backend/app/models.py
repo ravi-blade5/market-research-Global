@@ -47,6 +47,7 @@ class SourceCredibility(str, Enum):
     company_page = "company_page"
     reputable_news = "reputable_news"
     job_or_career_page = "job_or_career_page"
+    public_profile = "public_profile"
     partner_page = "partner_page"
     system = "system"
     rejected = "rejected"
@@ -72,6 +73,7 @@ class EvidenceSignalType(str, Enum):
     news_signal = "news_signal"
     vendor_outsourcing = "vendor_outsourcing"
     executive_buying_center = "executive_buying_center"
+    department_people_signal = "department_people_signal"
     ai_strategy = "ai_strategy"
     hcltech_opportunity = "hcltech_opportunity"
     consensus_move = "consensus_move"
@@ -82,6 +84,7 @@ class ResearchRunCreate(BaseModel):
     company_name: str = Field(min_length=2, max_length=200)
     mode: ResearchMode = ResearchMode.deep
     freshness_window: FreshnessWindow = FreshnessWindow.twelve_months
+    department: str | None = Field(default=None, max_length=120)
 
 
 class AgentRun(BaseModel):
@@ -250,6 +253,7 @@ class Artifact(BaseModel):
 class AccountReport(BaseModel):
     run_id: str
     company_name: str
+    department: str | None = None
     generated_at: datetime = Field(default_factory=utc_now)
     mode: ResearchMode
     freshness_window: FreshnessWindow
@@ -270,6 +274,7 @@ class AccountReport(BaseModel):
 class ResearchRun(BaseModel):
     id: str = Field(default_factory=lambda: f"run_{uuid4().hex[:12]}")
     company_name: str
+    department: str | None = None
     mode: ResearchMode
     freshness_window: FreshnessWindow
     status: RunStatus = RunStatus.queued

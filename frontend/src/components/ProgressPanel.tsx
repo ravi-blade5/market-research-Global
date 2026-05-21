@@ -40,6 +40,7 @@ export function ProgressPanel({ run }: ProgressPanelProps) {
         <div>
           <h2>Research Progress</h2>
           <p>{run.company_name}</p>
+          {run.department ? <p className="workflow-note">Department Lens: {run.department}</p> : null}
           <p className="workflow-note">
             {run.workflow_profile === "deep_dive_live_single_worker"
               ? "Deep Dive live MVP: expanded research stages. Full one-hour Cloud Workflow is the next production step."

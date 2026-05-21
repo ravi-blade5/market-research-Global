@@ -91,6 +91,7 @@ RECENCY_SENSITIVE_SECTIONS = {
     "it_spend",
     "key_signals",
     "outsourcing_vendor",
+    "department_lens",
     "ai_strategy",
     "hcltech_penetration",
     "consensus",
@@ -118,6 +119,7 @@ SECTION_SIGNAL_TYPES = {
     "key_signals": EvidenceSignalType.news_signal,
     "outsourcing_vendor": EvidenceSignalType.vendor_outsourcing,
     "executives": EvidenceSignalType.executive_buying_center,
+    "department_lens": EvidenceSignalType.department_people_signal,
     "ai_strategy": EvidenceSignalType.ai_strategy,
     "hcltech_penetration": EvidenceSignalType.hcltech_opportunity,
     "consensus": EvidenceSignalType.consensus_move,
@@ -135,6 +137,7 @@ TABLE_BY_SIGNAL_TYPE = {
     EvidenceSignalType.news_signal: "news_signals",
     EvidenceSignalType.vendor_outsourcing: "vendor_signals",
     EvidenceSignalType.executive_buying_center: "executive_buying_center",
+    EvidenceSignalType.department_people_signal: "department_people_signals",
     EvidenceSignalType.ai_strategy: "ai_strategy_signals",
     EvidenceSignalType.hcltech_opportunity: "opportunity_hypotheses",
     EvidenceSignalType.consensus_move: "consensus_moves",
@@ -153,11 +156,26 @@ TABLE_BY_SECTION = {
     "key_signals": "news_signals",
     "outsourcing_vendor": "vendor_signals",
     "executives": "executive_buying_center",
+    "department_lens": "department_people_signals",
     "ai_strategy": "ai_strategy_signals",
     "hcltech_penetration": "opportunity_hypotheses",
     "consensus": "consensus_moves",
     "evidence_appendix": "evidence_quality",
 }
+
+
+def _report_section_order_for_run(run: ResearchRun) -> list[tuple[str, str]]:
+    section_order = list(REPORT_SECTION_ORDER)
+    if not run.department:
+        return section_order
+    if any(section_id == "department_lens" for section_id, _ in section_order):
+        return section_order
+    insert_at = next(
+        (index + 1 for index, (section_id, _) in enumerate(section_order) if section_id == "footprint_hiring"),
+        len(section_order) - 1,
+    )
+    section_order.insert(insert_at, ("department_lens", f"{run.department} Department Lens"))
+    return section_order
 
 
 def _source_haystack(source: EvidenceSource) -> str:
@@ -326,7 +344,7 @@ def _infer_source_tier(source: EvidenceSource) -> SourceTier:
         return SourceTier.tier_2_official_company
     if source.credibility == SourceCredibility.reputable_news:
         return SourceTier.tier_3_reputable_context
-    if source.credibility == SourceCredibility.job_or_career_page:
+    if source.credibility in {SourceCredibility.job_or_career_page, SourceCredibility.public_profile}:
         return SourceTier.tier_4_directional_signal
     if any(token in haystack for token in ["career", "jobs", "job-", "hiring", "workdayjobs", "greenhouse", "lever.co"]):
         return SourceTier.tier_4_directional_signal
@@ -343,7 +361,7 @@ def _allowed_uses_for_source(source: EvidenceSource) -> list[str]:
     if tier == SourceTier.tier_3_reputable_context:
         uses.extend(["reputable_news_signal", "external_context", "partnership_context", "market_signal"])
     if tier == SourceTier.tier_4_directional_signal:
-        uses.extend(["hiring_signal", "technology_signal", "location_signal", "skills_signal"])
+        uses.extend(["hiring_signal", "technology_signal", "location_signal", "skills_signal", "public_people_signal"])
     if tier == SourceTier.system:
         uses.append("system_control")
     return _dedupe_preserve_order(uses)
@@ -370,7 +388,7 @@ def _source_use_policy(source: EvidenceSource) -> str:
     if tier == SourceTier.tier_3_reputable_context:
         return "May support reputable external context and directional market signals; do not use alone for exact financial metrics."
     if tier == SourceTier.tier_4_directional_signal:
-        return "May support directional hiring, skills, technology, and footprint signals; do not use for exact spend or headcount estimates."
+        return "May support directional hiring, skills, technology, footprint, and public people-profile signals; do not use for exact spend or headcount estimates."
     return "Internal/system evidence only."
 
 
@@ -1684,7 +1702,8 @@ class PlannerAgent(Agent):
 
     async def run(self, context: AgentContext) -> AgentContext:
         objectives = []
-        for section_id, title in REPORT_SECTION_ORDER:
+        section_order = _report_section_order_for_run(context.run)
+        for section_id, title in section_order:
             tag = "STRATEGY" if section_id in {"ai_strategy", "hcltech_penetration", "consensus"} else "RESEARCH"
             if section_id == "evidence_appendix":
                 tag = "DELIVERABLE"
@@ -1697,7 +1716,7 @@ class PlannerAgent(Agent):
                 status="partial",
                 confidence_score=0,
             )
-            for section_id, title in REPORT_SECTION_ORDER
+            for section_id, title in section_order
         ]
         context.report.quality_checks.append(
             QualityCheck(name="research_plan_created", passed=True, message=f"{len(objectives)} tagged objectives generated.")
@@ -1802,6 +1821,24 @@ class QuickSourceExpansionAgent(Agent):
                 6,
             ),
         ]
+        if context.run.department:
+            department = context.run.department
+            query_plan.extend(
+                [
+                    (
+                        f"{company} {department} leadership transformation priorities public profiles",
+                        SourceCredibility.reputable_news,
+                        0.66,
+                        5,
+                    ),
+                    (
+                        f"{company} {department} jobs hiring skills initiatives official careers",
+                        SourceCredibility.job_or_career_page,
+                        0.66,
+                        5,
+                    ),
+                ]
+            )
         discovered = await _discover_many(context, query_plan)
 
         _replace_quality_check(
@@ -1844,6 +1881,7 @@ class OpenAIDeepResearchAgent(Agent):
 Research {context.run.company_name} for a Draup-style account intelligence report from an HCLTech perspective.
 
 Freshness window for news/signals/investments/partnerships/deals: {context.run.freshness_window.value}.
+{f"Optional department lens: focus extra public people, leadership, skills, priorities, and messaging signals for the {context.run.department} department. Treat public profile data as directional evidence only." if context.run.department else ""}
 
 Required sections:
 - Company overview and official financial snapshot.
@@ -1931,6 +1969,13 @@ class DeepSourceExpansionAgent(Agent):
             f"{context.run.company_name} outsourcing system integrator partner vendor relationship managed services consulting transformation",
             f"{context.run.company_name} cost optimization automation headcount investment consultants transformation program",
         ]
+        if context.run.department:
+            queries.extend(
+                [
+                    f"{context.run.company_name} {context.run.department} leadership public profile priorities",
+                    f"{context.run.company_name} {context.run.department} hiring skills transformation initiatives",
+                ]
+            )
         discovered = await _discover_many(
             context,
             [(query, SourceCredibility.company_page, 0.68, 5) for query in queries],
@@ -2049,6 +2094,103 @@ class ApifySignalExtractionAgent(Agent):
                 message=f"Apify actor status={result.status}, run_id={result.job_id}; captured {captured} dataset pages."
                 + (f" Error: {result.error[:180]}" if result.error else ""),
             )
+        )
+        return context
+
+
+class DepartmentPeopleSignalAgent(Agent):
+    name = "Department People Signal Agent"
+    model = "gpt-5.4-mini"
+    reasoning_effort = "medium"
+    tools = ["apify", "linkedin_public_people_signals"]
+
+    async def run(self, context: AgentContext) -> AgentContext:
+        department = (context.run.department or "").strip()
+        if not department:
+            return context
+
+        section = _section(context, "department_lens")
+        apify = context.providers.extraction_providers()[1]
+        result = await apify.scrape_department_people(context.run.company_name, department)  # type: ignore[attr-defined]
+        captured = 0
+        profile_signals: list[dict[str, str]] = []
+        for page in result.pages:
+            if not page.text:
+                continue
+            source_id = _attach_extracted_page(
+                context,
+                url=page.url,
+                title=page.title,
+                publisher="Public profile dataset via Apify",
+                credibility=SourceCredibility.public_profile,
+                credibility_score=0.62,
+                text=page.text,
+                metadata=page.metadata,
+            )
+            headline = page.metadata.get("headline") or "public profile signal"
+            location = page.metadata.get("location") or "location unavailable"
+            claim_id = _add_claim(
+                context,
+                "department_lens",
+                (
+                    f"Public people signal for {department}: {page.title} is associated with "
+                    f"{context.run.company_name} and shows {headline}; location: {location}. "
+                    "Treat this as directional public-profile evidence, not a verified org chart."
+                ),
+                "fact",
+                [source_id],
+                0.62,
+            )
+            section.claim_ids.append(claim_id)
+            signal = next((item for item in context.report.evidence_signals if claim_id in item.claim_ids), None)
+            if signal:
+                signal.title = f"{department} people signal: {page.title}"
+                signal.detail = page.text[:1400]
+                signal.signal_type = EvidenceSignalType.department_people_signal
+                signal.signal_strength = "directional"
+            profile_signals.append(
+                {
+                    "name": page.title,
+                    "headline": headline,
+                    "location": location,
+                    "source_id": source_id,
+                }
+            )
+            captured += 1
+
+        if captured:
+            section.summary = (
+                f"Captured {captured} public {department} people/profile signals for {context.run.company_name}. "
+                "Use these as directional buying-center, skills, and messaging evidence only; do not treat them as a complete employee list."
+            )
+            section.content = {
+                "department": department,
+                "people_signals": profile_signals,
+                "signal_policy": "Directional public-profile evidence; not an official org chart or verified headcount source.",
+            }
+            section.status = "partial"
+            section.confidence_score = 0.62
+        else:
+            section.summary = (
+                f"Department Lens was requested for {department}, but the Apify people actor did not return usable public profile records. "
+                "No department people claims were added."
+            )
+            section.content = {"department": department, "people_signals": [], "provider_status": result.status}
+            section.status = "unavailable"
+            section.confidence_score = 0.0
+
+        _replace_quality_check(
+            context,
+            QualityCheck(
+                name="department_people_signal_extraction",
+                passed=captured > 0,
+                severity="warning" if captured == 0 else "info",
+                message=(
+                    f"Apify people actor status={result.status}, actor_id={context.providers.settings.apify_people_actor_id}, "
+                    f"run_id={result.job_id}; captured {captured} public profile records for department='{department}'."
+                    + (f" Error: {result.error[:220]}" if result.error else "")
+                ),
+            ),
         )
         return context
 
@@ -3694,16 +3836,24 @@ DEEP_AGENT_SEQUENCE: list[Agent] = [
 ]
 
 
-def get_agent_sequence(mode: ResearchMode) -> list[Agent]:
+def _with_department_agent(sequence: list[Agent], *, after_agent_name: str) -> list[Agent]:
+    next_sequence = list(sequence)
+    insert_at = next((index + 1 for index, agent in enumerate(next_sequence) if agent.name == after_agent_name), len(next_sequence))
+    next_sequence.insert(insert_at, DepartmentPeopleSignalAgent())
+    return next_sequence
+
+
+def get_agent_sequence(mode: ResearchMode, include_department: bool = False) -> list[Agent]:
     if mode == ResearchMode.deep:
-        return DEEP_AGENT_SEQUENCE
-    return QUICK_AGENT_SEQUENCE
+        return _with_department_agent(DEEP_AGENT_SEQUENCE, after_agent_name="Apify Signal Extraction Agent") if include_department else DEEP_AGENT_SEQUENCE
+    return _with_department_agent(QUICK_AGENT_SEQUENCE, after_agent_name="Quick Source Expansion Agent") if include_department else QUICK_AGENT_SEQUENCE
 
 
 def new_report_for_run(run: ResearchRun) -> AccountReport:
     return AccountReport(
         run_id=run.id,
         company_name=run.company_name,
+        department=run.department,
         mode=run.mode,
         freshness_window=run.freshness_window,
         sections=[],

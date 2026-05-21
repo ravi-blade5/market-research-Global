@@ -27,6 +27,7 @@ const recencySensitiveSections = new Set([
   "it_spend",
   "key_signals",
   "outsourcing_vendor",
+  "department_lens",
   "ai_strategy",
   "hcltech_penetration",
   "consensus"
@@ -282,6 +283,7 @@ export function ReportViewer({ report }: ReportViewerProps) {
               {report.mode} | freshness {report.freshness_window} | {report.claims.length} claims | {report.sources.length} sources |{" "}
               {evidenceSignals.length} signals | {evidenceTableRows.length} table rows
             </p>
+            {report.department && <p>Department Lens: {report.department}</p>}
             {(blockerChecks.length > 0 || warningChecks.length > 0) && (
               <div className="quality-summary">
                 {blockerChecks.length > 0 && <span className="section-status rejected">{blockerChecks.length} blockers</span>}

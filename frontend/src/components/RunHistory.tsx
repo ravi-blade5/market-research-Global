@@ -27,6 +27,7 @@ export function RunHistory({ activeRunId, runs, isLoading, onOpenRun, onRefresh,
       [
         item.id,
         item.company_name,
+        item.department ?? "",
         item.mode,
         item.status,
         item.freshness_window,
@@ -84,6 +85,7 @@ export function RunHistory({ activeRunId, runs, isLoading, onOpenRun, onRefresh,
                   <small>
                     {item.mode} | {item.status} | {formatDate(item.completed_at ?? item.created_at)}
                   </small>
+                  {item.department && <small>Department Lens: {item.department}</small>}
                   {item.has_report && (
                     <small>
                       {item.claim_count} claims | {item.source_count} sources | {item.table_row_count} rows

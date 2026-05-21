@@ -25,26 +25,33 @@ class ResearchOrchestrator:
         )
 
     def create_run(self, request: ResearchRunCreate) -> ResearchRun:
-        agent_sequence = get_agent_sequence(request.mode)
+        department = request.department.strip() if request.department else None
+        agent_sequence = get_agent_sequence(request.mode, include_department=bool(department))
+        run_notes = (
+            [
+                "Deep Dive now waits on OpenAI Deep Research background polling, Firecrawl extraction jobs, and Apify actor extraction when providers are configured.",
+                "Quality-first mode is active: OpenAI search, synthesis, and strategy agents use high/xhigh reasoning with broader evidence payloads before optimization.",
+                "Local execution persists agent checkpoints after each orchestration wave and can resume from the last completed agent if re-executed.",
+                "Cloud Tasks execution dispatches one saved orchestration wave at a time in production, so long Deep Dive runs can resume between agent waves.",
+            ]
+            if request.mode.value == "deep"
+            else [
+                "Quality-first Quick Scan uses expanded OpenAI source discovery across filings, press releases, partnerships, AI, hiring, and vendor signals.",
+                "Quick Scan skips one-hour Deep Research/background crawling, but still runs high-reasoning section synthesis and may take 5-15 minutes depending on provider latency.",
+            ]
+        )
+        if department:
+            run_notes.append(
+                f"Department Lens active for {department}: Apify people extraction will mine public profile/activity signals as directional evidence only."
+            )
         run = ResearchRun(
             company_name=request.company_name.strip(),
+            department=department,
             mode=request.mode,
             freshness_window=request.freshness_window,
             workflow_profile="deep_dive_checkpointed_agent_waves" if request.mode.value == "deep" else "quick_scan_quality_first",
             expected_duration_seconds=3600 if request.mode.value == "deep" else 900,
-            run_notes=(
-                [
-                    "Deep Dive now waits on OpenAI Deep Research background polling, Firecrawl extraction jobs, and Apify actor extraction when providers are configured.",
-                    "Quality-first mode is active: OpenAI search, synthesis, and strategy agents use high/xhigh reasoning with broader evidence payloads before optimization.",
-                    "Local execution persists agent checkpoints after each orchestration wave and can resume from the last completed agent if re-executed.",
-                    "Cloud Tasks execution dispatches one saved orchestration wave at a time in production, so long Deep Dive runs can resume between agent waves.",
-                ]
-                if request.mode.value == "deep"
-                else [
-                    "Quality-first Quick Scan uses expanded OpenAI source discovery across filings, press releases, partnerships, AI, hiring, and vendor signals.",
-                    "Quick Scan skips one-hour Deep Research/background crawling, but still runs high-reasoning section synthesis and may take 5-15 minutes depending on provider latency.",
-                ]
-            ),
+            run_notes=run_notes,
             agents=[
                 AgentRun(
                     name=agent.name,
@@ -80,7 +87,7 @@ class ResearchOrchestrator:
         self.store.save(run)
 
         context = AgentContext(run=run, report=run.report, providers=self.providers)
-        agent_sequence = get_agent_sequence(run.mode)
+        agent_sequence = get_agent_sequence(run.mode, include_department=bool(run.department))
         total = len(agent_sequence)
         completed_agent_names = {agent.name for agent in run.agents if agent.status == AgentStatus.completed}
         completed_agents = min(len(completed_agent_names), total)

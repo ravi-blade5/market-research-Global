@@ -60,6 +60,7 @@ async def list_run_history():
         {
             "id": run.id,
             "company_name": run.company_name,
+            "department": run.department,
             "mode": run.mode,
             "freshness_window": run.freshness_window,
             "status": run.status,
@@ -212,6 +213,8 @@ async def provider_status():
         "firecrawl_max_sources_per_run": settings.firecrawl_max_sources_per_run,
         "apify_actor_id": settings.apify_actor_id,
         "apify_max_crawl_pages": settings.apify_max_crawl_pages,
+        "apify_people_actor_id": settings.apify_people_actor_id,
+        "apify_people_dataset_item_limit": settings.apify_people_dataset_item_limit,
         "agent_parallelism": settings.agent_parallelism,
         "run_execution": settings.run_execution_backend,
         "cloud_tasks_queue": settings.cloud_tasks_queue,

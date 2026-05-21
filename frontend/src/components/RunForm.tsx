@@ -1,12 +1,14 @@
-import { Search, TimerReset } from "lucide-react";
+import { Search, TimerReset, UsersRound } from "lucide-react";
 import type { FreshnessWindow, ResearchMode } from "../lib/api";
 
 interface RunFormProps {
   companyName: string;
+  department: string;
   mode: ResearchMode;
   freshnessWindow: FreshnessWindow;
   isSubmitting: boolean;
   onCompanyNameChange: (value: string) => void;
+  onDepartmentChange: (value: string) => void;
   onModeChange: (value: ResearchMode) => void;
   onFreshnessWindowChange: (value: FreshnessWindow) => void;
   onSubmit: () => void;
@@ -14,10 +16,12 @@ interface RunFormProps {
 
 export function RunForm({
   companyName,
+  department,
   mode,
   freshnessWindow,
   isSubmitting,
   onCompanyNameChange,
+  onDepartmentChange,
   onModeChange,
   onFreshnessWindowChange,
   onSubmit
@@ -33,6 +37,22 @@ export function RunForm({
             value={companyName}
             onChange={(event) => onCompanyNameChange(event.target.value)}
             placeholder="Enter company name"
+            onKeyDown={(event) => {
+              if (event.key === "Enter") onSubmit();
+            }}
+          />
+        </div>
+      </div>
+
+      <div className="command-main department-control">
+        <label htmlFor="department-name">Department <span>optional</span></label>
+        <div className="company-input">
+          <UsersRound size={20} aria-hidden="true" />
+          <input
+            id="department-name"
+            value={department}
+            onChange={(event) => onDepartmentChange(event.target.value)}
+            placeholder="e.g., IT, Finance, Procurement"
             onKeyDown={(event) => {
               if (event.key === "Enter") onSubmit();
             }}

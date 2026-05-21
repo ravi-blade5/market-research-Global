@@ -47,6 +47,66 @@ def _apify_page_from_item(item: dict[str, Any], fallback_url: str) -> ExtractedP
     )
 
 
+def _first_present(item: dict[str, Any], keys: list[str]) -> Any:
+    for key in keys:
+        value = item.get(key)
+        if value not in (None, "", [], {}):
+            return value
+    return None
+
+
+def _flatten_people_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return " | ".join(str(v) for v in value.values() if v not in (None, "", [], {}))
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value[:6]:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                parts.append(" | ".join(str(v) for v in item.values() if v not in (None, "", [], {})))
+        return "\n".join(part for part in parts if part)
+    return ""
+
+
+def _apify_people_page_from_item(item: dict[str, Any], fallback_query: str) -> ExtractedPage:
+    name = _first_present(item, ["name", "fullName", "full_name", "personName", "profileName"]) or "Public profile"
+    profile_url = _first_present(item, ["linkedinUrl", "linkedin_url", "profileUrl", "profile_url", "url", "publicUrl"]) or f"apify://people/{name}"
+    headline = _first_present(item, ["headline", "title", "position", "currentPosition", "jobTitle", "occupation"])
+    company = _first_present(item, ["companyName", "company", "currentCompany", "organization"])
+    location = _first_present(item, ["location", "geo", "city", "country"])
+    about = _first_present(item, ["about", "summary", "description", "bio"])
+    posts = _first_present(item, ["posts", "recentPosts", "latestPosts", "activities", "updates"])
+    raw_text = _first_present(item, ["text", "content", "pageContent", "markdown"])
+    text_parts = [
+        f"Name: {name}",
+        f"Headline/title: {headline}" if headline else "",
+        f"Company: {company}" if company else "",
+        f"Location: {location}" if location else "",
+        f"About/summary: {_flatten_people_text(about)}" if about else "",
+        f"Recent public activity: {_flatten_people_text(posts)}" if posts else "",
+        _flatten_people_text(raw_text) if raw_text else "",
+    ]
+    text = "\n".join(part for part in text_parts if part).strip()
+    metadata = {
+        "source": "apify_people_dataset",
+        "query": fallback_query,
+        "profile_url": profile_url,
+        "person_name": name,
+        "headline": headline,
+        "company": company,
+        "location": location,
+    }
+    return ExtractedPage(
+        url=str(profile_url),
+        title=str(name),
+        text=text,
+        metadata=_metadata_to_str(metadata),
+    )
+
+
 class FirecrawlExtractionProvider(ExtractionProvider):
     name = "firecrawl"
 
@@ -250,6 +310,73 @@ class ApifyExtractionProvider(ExtractionProvider):
                 items = dataset_response.json()
                 pages = [
                     _apify_page_from_item(item, urls[0])
+                    for item in items
+                    if isinstance(item, dict)
+                ]
+                return ExtractionJobResult(provider=self.name, status=status, pages=pages, job_id=run_id)
+        except Exception as exc:
+            return ExtractionJobResult(provider=self.name, status="failed", pages=[], error=str(exc))
+
+    async def scrape_department_people(self, company_name: str, department: str) -> ExtractionJobResult:
+        if not department.strip():
+            return ExtractionJobResult(provider=self.name, status="skipped", pages=[], error="No department supplied.")
+        if not self.settings.apify_api_token:
+            return ExtractionJobResult(provider=self.name, status="unavailable", pages=[], error="Apify API token is not configured.")
+
+        actor_id = self.settings.apify_people_actor_id.replace("/", "~")
+        search_query = f'{company_name} {department} site:linkedin.com/in'
+        limit = self.settings.apify_people_dataset_item_limit
+        run_input = {
+            "companyName": company_name,
+            "company": company_name,
+            "department": department,
+            "query": search_query,
+            "queries": [search_query],
+            "search": search_query,
+            "keywords": [company_name, department, f"{department} {company_name}"],
+            "maxItems": limit,
+            "maxResults": limit,
+            "limit": limit,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=max(60, self.settings.apify_people_wait_timeout_seconds + 30)) as client:
+                run_response = await client.post(
+                    f"https://api.apify.com/v2/acts/{actor_id}/runs",
+                    params={"token": self.settings.apify_api_token, "waitForFinish": self.settings.apify_people_wait_timeout_seconds},
+                    json=run_input,
+                )
+                run_response.raise_for_status()
+                run_payload = run_response.json().get("data", run_response.json())
+                run_id = run_payload.get("id")
+                status = run_payload.get("status", "unknown")
+                dataset_id = run_payload.get("defaultDatasetId")
+
+                if run_id and status not in {"SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"}:
+                    poll_response = await client.get(
+                        f"https://api.apify.com/v2/actor-runs/{run_id}",
+                        params={"token": self.settings.apify_api_token, "waitForFinish": self.settings.apify_people_wait_timeout_seconds},
+                    )
+                    poll_response.raise_for_status()
+                    run_payload = poll_response.json().get("data", poll_response.json())
+                    status = run_payload.get("status", status)
+                    dataset_id = run_payload.get("defaultDatasetId", dataset_id)
+
+                if not dataset_id:
+                    return ExtractionJobResult(provider=self.name, status=status, pages=[], job_id=run_id, error="Apify people actor did not return a dataset id.")
+
+                dataset_response = await client.get(
+                    f"https://api.apify.com/v2/datasets/{dataset_id}/items",
+                    params={
+                        "token": self.settings.apify_api_token,
+                        "format": "json",
+                        "clean": "1",
+                        "limit": limit,
+                    },
+                )
+                dataset_response.raise_for_status()
+                items = dataset_response.json()
+                pages = [
+                    _apify_people_page_from_item(item, search_query)
                     for item in items
                     if isinstance(item, dict)
                 ]
