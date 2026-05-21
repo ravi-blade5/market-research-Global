@@ -57,7 +57,7 @@ gcloud run deploy $ApiService `
   --cpu 2 `
   --timeout 3600 `
   --concurrency 10 `
-  --set-env-vars "APP_ENV=gcp,RUN_STORE_BACKEND=postgres,ARTIFACT_BACKEND=gcs,RUN_EXECUTION_BACKEND=cloud_tasks,PUBLIC_BASE_URL=$publicBaseUrl,GCP_PROJECT_ID=$ProjectId,GCP_REGION=$Region,CLOUD_TASKS_LOCATION=$Region,CLOUD_TASKS_QUEUE=$TasksQueue,GCS_ARTIFACT_BUCKET=$Bucket,DATA_DIR=/tmp/data,ALLOW_LIVE_PROVIDERS=true,AGENT_PARALLELISM=4,APIFY_PEOPLE_ACTOR_ID=Vb6LZkh4EqRlR0Ka9" `
+  --set-env-vars "APP_ENV=gcp,RUN_STORE_BACKEND=postgres,ARTIFACT_BACKEND=gcs,RUN_EXECUTION_BACKEND=cloud_tasks,PUBLIC_BASE_URL=$publicBaseUrl,GCP_PROJECT_ID=$ProjectId,GCP_REGION=$Region,CLOUD_TASKS_LOCATION=$Region,CLOUD_TASKS_QUEUE=$TasksQueue,GCS_ARTIFACT_BUCKET=$Bucket,DATA_DIR=/tmp/data,ALLOW_LIVE_PROVIDERS=true,AGENT_PARALLELISM=4,APIFY_PEOPLE_ACTOR_ID=harvestapi~linkedin-company-employees,APIFY_PEOPLE_PROFILE_SCRAPER_MODE=Full (`$8 per 1k)" `
   --set-secrets "DATABASE_URL=DATABASE_URL:latest,TASK_DISPATCH_TOKEN=TASK_DISPATCH_TOKEN:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,FIRECRAWL_API_KEY=FIRECRAWL_API_KEY:latest,APIFY_API_TOKEN=APIFY_API_TOKEN:latest"
 
 $apiUrl = gcloud run services describe $ApiService --region $Region --project $ProjectId --format "value(status.url)"

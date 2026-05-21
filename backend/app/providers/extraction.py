@@ -72,13 +72,20 @@ def _flatten_people_text(value: Any) -> str:
 
 
 def _apify_people_page_from_item(item: dict[str, Any], fallback_query: str) -> ExtractedPage:
-    name = _first_present(item, ["name", "fullName", "full_name", "personName", "profileName"]) or "Public profile"
-    profile_url = _first_present(item, ["linkedinUrl", "linkedin_url", "profileUrl", "profile_url", "url", "publicUrl"]) or f"apify://people/{name}"
+    full_name = _first_present(item, ["name", "fullName", "full_name", "personName", "profileName"])
+    if not full_name:
+        full_name = " ".join(str(part) for part in [item.get("firstName"), item.get("lastName")] if part).strip()
+    name = full_name or "Public profile"
+    profile_url = _first_present(
+        item,
+        ["linkedinUrl", "linkedin_url", "linkedinProfileUrl", "profileUrl", "profile_url", "url", "publicUrl"],
+    ) or f"apify://people/{name}"
     headline = _first_present(item, ["headline", "title", "position", "currentPosition", "jobTitle", "occupation"])
-    company = _first_present(item, ["companyName", "company", "currentCompany", "organization"])
+    company = _first_present(item, ["companyName", "company", "currentCompany", "currentCompanyName", "organization"])
     location = _first_present(item, ["location", "geo", "city", "country"])
     about = _first_present(item, ["about", "summary", "description", "bio"])
     posts = _first_present(item, ["posts", "recentPosts", "latestPosts", "activities", "updates"])
+    experience = _first_present(item, ["experience", "experiences", "positions", "currentPositions", "workExperience"])
     raw_text = _first_present(item, ["text", "content", "pageContent", "markdown"])
     text_parts = [
         f"Name: {name}",
@@ -86,6 +93,7 @@ def _apify_people_page_from_item(item: dict[str, Any], fallback_query: str) -> E
         f"Company: {company}" if company else "",
         f"Location: {location}" if location else "",
         f"About/summary: {_flatten_people_text(about)}" if about else "",
+        f"Experience: {_flatten_people_text(experience)}" if experience else "",
         f"Recent public activity: {_flatten_people_text(posts)}" if posts else "",
         _flatten_people_text(raw_text) if raw_text else "",
     ]
@@ -317,27 +325,44 @@ class ApifyExtractionProvider(ExtractionProvider):
         except Exception as exc:
             return ExtractionJobResult(provider=self.name, status="failed", pages=[], error=str(exc))
 
-    async def scrape_department_people(self, company_name: str, department: str) -> ExtractionJobResult:
+    async def scrape_department_people(
+        self,
+        company_name: str,
+        department: str,
+        *,
+        company_urls: list[str] | None = None,
+        function_ids: list[str] | None = None,
+    ) -> ExtractionJobResult:
         if not department.strip():
             return ExtractionJobResult(provider=self.name, status="skipped", pages=[], error="No department supplied.")
         if not self.settings.apify_api_token:
             return ExtractionJobResult(provider=self.name, status="unavailable", pages=[], error="Apify API token is not configured.")
+        normalized_company_urls = [
+            url
+            for url in dict.fromkeys(company_urls or [])
+            if url.startswith("http") and "linkedin.com/company/" in url.lower()
+        ]
+        if not normalized_company_urls:
+            return ExtractionJobResult(
+                provider=self.name,
+                status="skipped",
+                pages=[],
+                error="LinkedIn company URL is required for the HarvestAPI company employees actor.",
+            )
 
         actor_id = self.settings.apify_people_actor_id.replace("/", "~")
-        search_query = f'{company_name} {department} site:linkedin.com/in'
+        search_query = f"{company_name} {department}"
         limit = self.settings.apify_people_dataset_item_limit
         run_input = {
-            "companyName": company_name,
-            "company": company_name,
-            "department": department,
-            "query": search_query,
-            "queries": [search_query],
-            "search": search_query,
-            "keywords": [company_name, department, f"{department} {company_name}"],
+            "profileScraperMode": self.settings.apify_people_profile_scraper_mode,
             "maxItems": limit,
-            "maxResults": limit,
-            "limit": limit,
+            "companies": normalized_company_urls[:1000],
+            "searchQuery": department,
+            "companyBatchMode": "all_at_once",
+            "takePages": max(1, min(100, (limit + 24) // 25)),
         }
+        if function_ids:
+            run_input["functionIds"] = list(dict.fromkeys(function_ids))[:20]
         try:
             async with httpx.AsyncClient(timeout=max(60, self.settings.apify_people_wait_timeout_seconds + 30)) as client:
                 run_response = await client.post(

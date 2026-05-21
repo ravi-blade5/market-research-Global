@@ -178,6 +178,91 @@ def _report_section_order_for_run(run: ResearchRun) -> list[tuple[str, str]]:
     return section_order
 
 
+LINKEDIN_FUNCTION_IDS_BY_DEPARTMENT = {
+    "accounting": ["1"],
+    "admin": ["2"],
+    "administrative": ["2"],
+    "business development": ["4"],
+    "consulting": ["6"],
+    "engineering": ["8"],
+    "technology": ["13"],
+    "information technology": ["13"],
+    "it": ["13"],
+    "digital": ["13"],
+    "finance": ["10", "1"],
+    "cfo": ["10", "1"],
+    "healthcare": ["11"],
+    "human resources": ["12"],
+    "hr": ["12"],
+    "talent": ["12"],
+    "legal": ["14"],
+    "marketing": ["15"],
+    "communications": ["16"],
+    "operations": ["18"],
+    "product": ["19"],
+    "program": ["20"],
+    "project": ["20"],
+    "procurement": ["21"],
+    "purchasing": ["21"],
+    "supply chain": ["18", "21"],
+    "quality": ["22"],
+    "research": ["24"],
+    "r&d": ["24", "8"],
+    "sales": ["25"],
+    "customer": ["26"],
+    "support": ["26"],
+    "success": ["26"],
+}
+
+
+def _linkedin_function_ids_for_department(department: str) -> list[str]:
+    lowered = department.lower()
+    function_ids: list[str] = []
+    for token, ids in LINKEDIN_FUNCTION_IDS_BY_DEPARTMENT.items():
+        if token in lowered:
+            function_ids.extend(ids)
+    return _dedupe_preserve_order(function_ids)[:20]
+
+
+def _normalize_linkedin_company_url(url: str) -> str | None:
+    lowered = url.lower()
+    marker = "linkedin.com/company/"
+    if marker not in lowered:
+        return None
+    cleaned = url.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+    if "/company/" not in cleaned:
+        return None
+    prefix, slug_tail = cleaned.split("/company/", 1)
+    slug = slug_tail.split("/", 1)[0]
+    if not slug:
+        return None
+    return f"{prefix}/company/{slug}/"
+
+
+async def _linkedin_company_urls_for_run(context: AgentContext) -> list[str]:
+    candidates = [
+        normalized
+        for source in context.report.sources
+        if (normalized := _normalize_linkedin_company_url(source.url))
+    ]
+    if not candidates:
+        discovered = await _discover(
+            context,
+            f"{context.run.company_name} official LinkedIn company page",
+            SourceCredibility.public_profile,
+            score=0.62,
+            limit=6,
+        )
+        source_by_id = {source.id: source for source in context.report.sources}
+        candidates = [
+            normalized
+            for source_id in discovered
+            if (source := source_by_id.get(source_id))
+            if (normalized := _normalize_linkedin_company_url(source.url))
+        ]
+    return _dedupe_preserve_order(candidates)[:5]
+
+
 def _source_haystack(source: EvidenceSource) -> str:
     return f"{source.title} {source.url} {source.publisher or ''}".lower()
 
@@ -2111,7 +2196,14 @@ class DepartmentPeopleSignalAgent(Agent):
 
         section = _section(context, "department_lens")
         apify = context.providers.extraction_providers()[1]
-        result = await apify.scrape_department_people(context.run.company_name, department)  # type: ignore[attr-defined]
+        linkedin_company_urls = await _linkedin_company_urls_for_run(context)
+        function_ids = _linkedin_function_ids_for_department(department)
+        result = await apify.scrape_department_people(  # type: ignore[attr-defined]
+            context.run.company_name,
+            department,
+            company_urls=linkedin_company_urls,
+            function_ids=function_ids,
+        )
         captured = 0
         profile_signals: list[dict[str, str]] = []
         for page in result.pages:
@@ -2165,6 +2257,8 @@ class DepartmentPeopleSignalAgent(Agent):
             )
             section.content = {
                 "department": department,
+                "linkedin_company_urls": linkedin_company_urls,
+                "linkedin_function_ids": function_ids,
                 "people_signals": profile_signals,
                 "signal_policy": "Directional public-profile evidence; not an official org chart or verified headcount source.",
             }
@@ -2175,7 +2269,13 @@ class DepartmentPeopleSignalAgent(Agent):
                 f"Department Lens was requested for {department}, but the Apify people actor did not return usable public profile records. "
                 "No department people claims were added."
             )
-            section.content = {"department": department, "people_signals": [], "provider_status": result.status}
+            section.content = {
+                "department": department,
+                "linkedin_company_urls": linkedin_company_urls,
+                "linkedin_function_ids": function_ids,
+                "people_signals": [],
+                "provider_status": result.status,
+            }
             section.status = "unavailable"
             section.confidence_score = 0.0
 
@@ -2187,7 +2287,8 @@ class DepartmentPeopleSignalAgent(Agent):
                 severity="warning" if captured == 0 else "info",
                 message=(
                     f"Apify people actor status={result.status}, actor_id={context.providers.settings.apify_people_actor_id}, "
-                    f"run_id={result.job_id}; captured {captured} public profile records for department='{department}'."
+                    f"run_id={result.job_id}; captured {captured} public profile records for department='{department}', "
+                    f"company_urls={len(linkedin_company_urls)}, function_ids={function_ids or 'none'}."
                     + (f" Error: {result.error[:220]}" if result.error else "")
                 ),
             ),

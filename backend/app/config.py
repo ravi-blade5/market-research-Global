@@ -49,7 +49,8 @@ class Settings(BaseSettings):
     apify_max_crawl_pages: int = 20
     apify_wait_timeout_seconds: int = 300
     apify_dataset_item_limit: int = 30
-    apify_people_actor_id: str = "Vb6LZkh4EqRlR0Ka9"
+    apify_people_actor_id: str = "harvestapi~linkedin-company-employees"
+    apify_people_profile_scraper_mode: str = "Full ($8 per 1k)"
     apify_people_wait_timeout_seconds: int = 300
     apify_people_dataset_item_limit: int = 50
     allow_live_providers: bool = False

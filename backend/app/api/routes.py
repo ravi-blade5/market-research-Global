@@ -214,6 +214,7 @@ async def provider_status():
         "apify_actor_id": settings.apify_actor_id,
         "apify_max_crawl_pages": settings.apify_max_crawl_pages,
         "apify_people_actor_id": settings.apify_people_actor_id,
+        "apify_people_profile_scraper_mode": settings.apify_people_profile_scraper_mode,
         "apify_people_dataset_item_limit": settings.apify_people_dataset_item_limit,
         "agent_parallelism": settings.agent_parallelism,
         "run_execution": settings.run_execution_backend,
