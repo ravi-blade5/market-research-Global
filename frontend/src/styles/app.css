@@ -6,6 +6,13 @@ html {
   scroll-behavior: smooth;
 }
 
+html,
+body,
+#root {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
 body {
   margin: 0;
   color: var(--color-ink);
@@ -90,6 +97,7 @@ a {
   border: 1px solid rgba(140, 200, 250, 0.9);
   border-radius: 8px;
   box-shadow: var(--shadow-soft);
+  min-width: 0;
 }
 
 .command-panel {
@@ -199,14 +207,16 @@ a {
 
 .workbench {
   display: grid;
-  grid-template-columns: 360px 1fr;
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
   gap: 18px;
   align-items: start;
+  min-width: 0;
 }
 
 .left-rail {
   display: grid;
   gap: 14px;
+  min-width: 0;
 }
 
 .surface {
@@ -220,6 +230,7 @@ a {
   justify-content: space-between;
   align-items: flex-start;
   gap: 12px;
+  min-width: 0;
 }
 
 .surface h2,
@@ -590,9 +601,10 @@ a {
 
 .report-layout {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   align-items: start;
+  min-width: 0;
 }
 
 .section-nav {
@@ -642,10 +654,13 @@ a {
 .report-main {
   display: grid;
   gap: 16px;
+  min-width: 0;
 }
 
 .report-toolbar {
   padding: 14px;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
 .artifact-actions {
@@ -687,14 +702,16 @@ a {
 
 .section-stack {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
   gap: 12px;
   align-items: start;
   grid-auto-flow: dense;
+  min-width: 0;
 }
 
 .report-section {
   min-width: 0;
+  max-width: 100%;
   display: grid;
   gap: 10px;
   align-content: start;
@@ -702,7 +719,7 @@ a {
 }
 
 .report-section.expanded {
-  grid-column: span 2;
+  grid-column: 1 / -1;
 }
 
 .report-section h3 {
@@ -798,6 +815,7 @@ a {
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+  min-width: 0;
 }
 
 .section-evidence {
@@ -809,6 +827,7 @@ a {
 }
 
 .source-chip {
+  max-width: 100%;
   display: inline-flex;
   align-items: center;
   min-height: 24px;
@@ -820,6 +839,9 @@ a {
   text-decoration: none;
   font-size: 12px;
   font-weight: 800;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .muted-inline {
@@ -862,8 +884,9 @@ a {
 
 .chat-form {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) auto;
+  grid-template-columns: minmax(min(220px, 100%), 1fr) auto;
   gap: 10px;
+  min-width: 0;
 }
 
 .chat-form input {
@@ -944,7 +967,7 @@ a {
 
 .quality-row {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 12px;
   align-items: start;
   padding: 10px;
@@ -962,11 +985,13 @@ a {
   margin: 3px 0 0;
   color: var(--color-muted);
   line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .evidence-list {
   display: grid;
   gap: 10px;
+  min-width: 0;
 }
 
 .evidence-list.compact {
@@ -977,9 +1002,11 @@ a {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  min-width: 0;
 }
 
 .signal-chip {
+  max-width: 100%;
   min-height: 28px;
   display: inline-flex;
   align-items: center;
@@ -991,6 +1018,9 @@ a {
   border-radius: 8px;
   font-size: 12px;
   font-weight: 700;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .signal-chip strong {
@@ -999,13 +1029,19 @@ a {
 
 .evidence-row {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
   align-items: start;
   padding: 12px;
   background: #f8fbff;
   border: 1px solid var(--color-light-blue);
   border-radius: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.evidence-row > div {
+  min-width: 0;
 }
 
 .evidence-row strong {
@@ -1015,6 +1051,7 @@ a {
 
 .evidence-row p {
   margin: 4px 0 0;
+  overflow-wrap: anywhere;
 }
 
 .evidence-row small {
@@ -1022,6 +1059,7 @@ a {
   margin-top: 4px;
   color: var(--color-muted);
   line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .evidence-sources {
@@ -1030,11 +1068,14 @@ a {
 
 .sources-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
   gap: 10px;
+  min-width: 0;
 }
 
 .sources-grid a {
+  min-width: 0;
+  max-width: 100%;
   min-height: 112px;
   display: grid;
   align-content: start;
@@ -1045,10 +1086,12 @@ a {
   border: 1px solid var(--color-light-blue);
   border-radius: 8px;
   text-decoration: none;
+  overflow: hidden;
 }
 
 .sources-grid span {
   width: fit-content;
+  max-width: 100%;
   min-height: 24px;
   display: inline-flex;
   align-items: center;
@@ -1058,15 +1101,20 @@ a {
   border-radius: 8px;
   font-size: 12px;
   font-weight: 800;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .sources-grid strong {
   color: var(--color-dark-purple);
   line-height: 1.25;
+  overflow-wrap: anywhere;
 }
 
 .sources-grid small {
   color: var(--color-muted);
+  overflow-wrap: anywhere;
 }
 
 .muted-state {

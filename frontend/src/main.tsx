@@ -4,9 +4,10 @@ import { App } from "./App";
 import "./styles/tokens.css";
 import "./styles/app.css";
 
+document.documentElement.dataset.appBuild = "cachefix-2026-05-21-2";
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <App />
   </React.StrictMode>
 );
-
