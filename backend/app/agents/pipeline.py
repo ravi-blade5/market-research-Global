@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 from app.agents.base import Agent, AgentContext
 from app.agents.gtm_playbook import rank_gtm_channels
@@ -267,6 +268,37 @@ def _source_haystack(source: EvidenceSource) -> str:
     return f"{source.title} {source.url} {source.publisher or ''}".lower()
 
 
+def _domain_label(url: str) -> str:
+    parsed = urlparse(url)
+    domain = parsed.netloc.lower().replace("www.", "")
+    if not domain:
+        return ""
+    parts = [part for part in domain.split(".") if part and part not in {"com", "org", "net", "co", "uk", "jp", "de", "in"}]
+    if not parts:
+        return domain
+    label = parts[-1] if parts[-1] not in {"co"} else parts[0]
+    acronyms = {"sap": "SAP", "ibm": "IBM", "hcltech": "HCLTech", "aws": "AWS"}
+    return acronyms.get(label, label.replace("-", " ").title())
+
+
+def _infer_publisher_from_url(url: str) -> str | None:
+    if url.startswith("system://"):
+        return None
+    parsed = urlparse(url)
+    domain = parsed.netloc.lower().replace("www.", "")
+    if not domain:
+        return None
+    if "wikipedia.org" in domain:
+        return "Wikipedia"
+    if "sec.gov" in domain:
+        return "SEC"
+    return _domain_label(url) or domain
+
+
+def _is_wikipedia_source(source: EvidenceSource) -> bool:
+    return "wikipedia.org" in source.url.lower()
+
+
 def _coerce_source_datetime(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -323,7 +355,7 @@ def _as_of_datetime(context: AgentContext) -> datetime:
 
 
 def _recency_cutoff_months(context: AgentContext) -> int:
-    return 12
+    return 6 if context.run.freshness_window == FreshnessWindow.six_months else 12
 
 
 def _month_delta(later: datetime, earlier: datetime) -> int:
@@ -416,6 +448,8 @@ def _infer_source_tier(source: EvidenceSource) -> SourceTier:
         return SourceTier.rejected
     if source.credibility == SourceCredibility.system or source.url.startswith("system://"):
         return SourceTier.system
+    if _is_wikipedia_source(source):
+        return SourceTier.tier_4_directional_signal
     if source.credibility in {
         SourceCredibility.official_filing,
         SourceCredibility.investor_relations,
@@ -425,6 +459,8 @@ def _infer_source_tier(source: EvidenceSource) -> SourceTier:
         return SourceTier.tier_1_official_financial
     if any(token in haystack for token in ["sec.gov", "annual report", "quarterly result", "earnings", "investor", "10-k", "10-q", "20-f", "r&d", "financial result"]):
         return SourceTier.tier_1_official_financial
+    if any(token in haystack for token in ["press-release", "press release", "newsroom", "/news/", "/press/", "company/en/news", "official announcement"]):
+        return SourceTier.tier_2_official_company
     if source.credibility in {SourceCredibility.company_page, SourceCredibility.partner_page}:
         return SourceTier.tier_2_official_company
     if source.credibility == SourceCredibility.reputable_news:
@@ -453,7 +489,14 @@ def _allowed_uses_for_source(source: EvidenceSource) -> list[str]:
 
 
 def _enrich_source(source: EvidenceSource) -> EvidenceSource:
-    source.source_tier = source.source_tier or _infer_source_tier(source)
+    inferred_publisher = _infer_publisher_from_url(source.url)
+    if inferred_publisher and (not source.publisher or source.publisher in {"Unknown publisher", "OpenAI Deep Research", "OpenAI adapter"}):
+        source.publisher = inferred_publisher
+    if _is_wikipedia_source(source):
+        source.credibility_score = min(source.credibility_score, 0.45)
+        source.source_tier = SourceTier.tier_4_directional_signal
+    else:
+        source.source_tier = source.source_tier or _infer_source_tier(source)
     source.allowed_uses = _dedupe_preserve_order(source.allowed_uses + _allowed_uses_for_source(source))
     if source.source_tier == SourceTier.tier_1_official_financial:
         source.credibility_score = max(source.credibility_score, 0.82)
@@ -733,6 +776,7 @@ def refresh_evidence_tables(context: AgentContext) -> None:
     }
 
     for source in report.sources:
+        _enrich_source(source)
         tier = source.source_tier or _infer_source_tier(source)
         snapshots = snapshots_by_source.get(source.id, [])
         _append_table_row(
@@ -741,7 +785,7 @@ def refresh_evidence_tables(context: AgentContext) -> None:
                 table_name="source_catalog",
                 row_type="source",
                 title=_table_detail(source.title or source.url, limit=180),
-                detail=_table_detail(f"{source.publisher or 'Unknown publisher'} | {source.url}", limit=1000),
+                detail=_table_detail(f"{source.publisher or _infer_publisher_from_url(source.url) or 'Unlabeled source'} | {source.url}", limit=1000),
                 normalized_fields={
                     "url": source.url,
                     "publisher": source.publisher,
@@ -921,11 +965,27 @@ def refresh_evidence_tables(context: AgentContext) -> None:
     _dedupe_report_links(report)
 
 
+def _clean_reader_artifacts(text: str) -> str:
+    def clean_location(match: re.Match[str]) -> str:
+        fragment = match.group(1)
+        location_match = re.search(r"['\"]linkedinText['\"]\s*:\s*['\"]([^'\"]+)['\"]", fragment)
+        if not location_match:
+            location_match = re.search(r"['\"]text['\"]\s*:\s*['\"]([^'\"]+)['\"]", fragment)
+        location = location_match.group(1) if location_match else "location unavailable"
+        return f"location: {location}. Treat"
+
+    cleaned = re.sub(r"location:\s*(\{.*?\})\.\s*Treat", clean_location, text, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(r"\(\s*(?:[,;]\s*)+\)", "", cleaned)
+    cleaned = re.sub(r"\s+([,.;:])", r"\1", cleaned)
+    cleaned = re.sub(r"(?:,\s*){2,}", ", ", cleaned)
+    return cleaned
+
+
 def _strip_internal_source_tokens(text: str) -> str:
     cleaned = re.sub(r"\[[^\]]*src_[0-9a-f]{8,16}[^\]]*\]", "", text)
     cleaned = SOURCE_TOKEN_RE.sub("", cleaned)
     cleaned = re.sub(r"\[\s*[,;:\s]*\]", "", cleaned)
-    return " ".join(cleaned.replace("[]", "").split())
+    return " ".join(_clean_reader_artifacts(cleaned.replace("[]", "")).split())
 
 
 def _replace_quality_check(context: AgentContext, check: QualityCheck) -> None:
@@ -1302,6 +1362,145 @@ def _fallback_section_from_claims(
     section.status = "partial"
     section.confidence_score = max(section.confidence_score, min_confidence)
     return True
+
+
+SECTION_SIGNAL_REPAIR_SPECS = {
+    "recent_investments": {
+        "signal_types": {
+            EvidenceSignalType.investment,
+            EvidenceSignalType.it_investment,
+            EvidenceSignalType.partnership_deal,
+            EvidenceSignalType.news_signal,
+            EvidenceSignalType.ai_strategy,
+        },
+        "keywords": [
+            "investment",
+            "capital",
+            "capex",
+            "acquisition",
+            "acquire",
+            "venture",
+            "fund",
+            "facility",
+            "expansion",
+            "launch",
+            "ai",
+            "cloud",
+            "data",
+            "manufacturing",
+            "r&d",
+        ],
+        "summary_prefix": "Recent investment and capital-allocation signals from the verified evidence include",
+        "claim_prefix": "Investment signal",
+        "min_confidence": 0.72,
+        "caveat": "Exact amounts, deal economics, geographies, or timing remain undisclosed unless they are explicitly stated in the cited source.",
+    },
+    "partnerships_deals": {
+        "signal_types": {
+            EvidenceSignalType.partnership_deal,
+            EvidenceSignalType.investment,
+            EvidenceSignalType.news_signal,
+            EvidenceSignalType.ai_strategy,
+        },
+        "keywords": ["partnership", "partner", "collaboration", "alliance", "deal", "agreement", "customer", "launch", "commercial"],
+        "summary_prefix": "Recent partnership, deal, and commercial-move signals include",
+        "claim_prefix": "Partnership/deal signal",
+        "min_confidence": 0.72,
+        "caveat": "Deal values and commercial scale are not inferred when the cited source does not disclose them.",
+    },
+    "ai_strategy": {
+        "signal_types": {
+            EvidenceSignalType.ai_strategy,
+            EvidenceSignalType.investment,
+            EvidenceSignalType.partnership_deal,
+            EvidenceSignalType.technology_stack,
+            EvidenceSignalType.news_signal,
+        },
+        "keywords": ["ai", "artificial intelligence", "genai", "machine learning", "automation", "cloud", "data", "platform", "roadmap"],
+        "summary_prefix": "AI strategy signals indicate",
+        "claim_prefix": "AI strategy signal",
+        "min_confidence": 0.72,
+        "caveat": "This is a public-signal assessment, not a claim of undisclosed internal roadmap.",
+    },
+}
+
+
+def _signal_matches_keywords(signal: EvidenceSignal, keywords: list[str]) -> bool:
+    haystack = f"{signal.title} {signal.detail}".lower()
+    return any(keyword in haystack for keyword in keywords)
+
+
+def _signal_stale_only(context: AgentContext, signal: EvidenceSignal, section_id: str) -> bool:
+    source_by_id = {source.id: source for source in context.report.sources}
+    linked_sources = [source_by_id[source_id] for source_id in signal.source_ids if source_id in source_by_id]
+    return bool(linked_sources) and all(_source_is_stale_for_section(context, source, section_id) for source in linked_sources)
+
+
+def _signal_sort_key(context: AgentContext, signal: EvidenceSignal, section_id: str) -> tuple[int, float, int, str]:
+    source_by_id = {source.id: source for source in context.report.sources}
+    linked_sources = [source_by_id[source_id] for source_id in signal.source_ids if source_id in source_by_id]
+    stale_only = bool(linked_sources) and all(_source_is_stale_for_section(context, source, section_id) for source in linked_sources)
+    dates = [_source_inferred_datetime(source) for source in linked_sources]
+    latest = max((date.timestamp() for date in dates if date), default=0.0)
+    return (1 if stale_only else 0, -signal.confidence_score, -int(latest), signal.title.lower())
+
+
+def _repair_weak_sections_from_signal_graph(context: AgentContext) -> None:
+    for section_id, spec in SECTION_SIGNAL_REPAIR_SPECS.items():
+        section = _section(context, section_id)
+        useful_existing_claims = [
+            claim
+            for claim in _section_claims(context, section_id)
+            if claim.claim_type in {"fact", "inference", "recommendation"}
+            and claim.evidence_source_ids
+            and not _is_policy_or_guardrail_claim(claim.text)
+        ]
+        if section.confidence_score >= spec["min_confidence"] and len(useful_existing_claims) >= 2:
+            continue
+        keywords: list[str] = spec["keywords"]  # type: ignore[assignment]
+        signal_types: set[EvidenceSignalType] = spec["signal_types"]  # type: ignore[assignment]
+        candidate_signals = [
+            signal
+            for signal in context.report.evidence_signals
+            if signal.signal_type in signal_types
+            and signal.signal_strength != "unsupported"
+            and signal.source_ids
+            and _signal_matches_keywords(signal, keywords)
+        ]
+        if not candidate_signals:
+            continue
+        fresh_signals = [signal for signal in candidate_signals if not _signal_stale_only(context, signal, section_id)]
+        selected = fresh_signals or candidate_signals
+        selected = sorted(selected, key=lambda signal: _signal_sort_key(context, signal, section_id))[:6]
+        headlines: list[str] = []
+        for signal in selected:
+            text = _reader_ready_claim_text(signal.detail or signal.title)
+            headline = _claim_headline_text(text, limit=210)
+            if not headline:
+                continue
+            if _signal_stale_only(context, signal, section_id):
+                headline = f"Historical baseline context: {headline}"
+            claim_id = _add_claim(
+                context,
+                section_id,
+                f"{spec['claim_prefix']}: {headline}.",
+                "fact" if signal.signal_strength in {"exact", "directional"} else "inference",
+                signal.source_ids,
+                min(0.9, max(float(signal.confidence_score), float(spec["min_confidence"]))),
+            )
+            section.claim_ids.append(claim_id)
+            headlines.append(headline)
+        if not headlines:
+            continue
+        section.summary = f"{spec['summary_prefix']}: " + "; ".join(headlines[:4]) + f". {spec['caveat']}"
+        section.content["synthesis"] = {
+            "provider": "evidence_graph_repair",
+            "model": "deterministic_signal_synthesis",
+            "reasoning_effort": "policy",
+            "bullets": headlines,
+        }
+        section.status = "partial"
+        section.confidence_score = max(section.confidence_score, float(spec["min_confidence"]))
 
 
 def _apply_hcl_strategy_playbook(context: AgentContext, source_ids: list[str]) -> None:
@@ -1686,7 +1885,7 @@ def _evidence_payload(context: AgentContext, source_ids: list[str] | None = None
             "recency_status": _source_recency_status(context, source, section_id),
             "inferred_source_date": _source_inferred_datetime(source).date().isoformat() if _source_inferred_datetime(source) else None,
             "freshness_policy": (
-                "Freshness-sensitive section: use sources from the last 12 months when available; older 2024-style sources are historical baseline only."
+                f"Freshness-sensitive section: use sources from the last {_recency_cutoff_months(context)} months when available; older 2024-style sources are historical baseline only."
                 if section_id and _is_recency_sensitive_section(section_id)
                 else "Baseline sources may be used where appropriate."
             ),
@@ -1724,7 +1923,7 @@ async def _synthesize_into_section(
         instructions=(
             instructions
             + (
-                "\nFreshness rule: for this freshness-sensitive section, use sources from the latest 12 months when available. "
+                f"\nFreshness rule: for this freshness-sensitive section, use sources from the latest {_recency_cutoff_months(context)} months when available. "
                 "Treat older annual reports, FY/Q4 pages, and 2024-era material as historical baseline only; do not use them as primary support for recent investments, partnerships, IT-spend signals, AI moves, or account recommendations."
                 if _is_recency_sensitive_section(section_id)
                 else ""
@@ -3442,6 +3641,7 @@ class VerificationAgent(Agent):
     tools = ["claim_evidence_map", "quality_gate"]
 
     async def run(self, context: AgentContext) -> AgentContext:
+        _repair_weak_sections_from_signal_graph(context)
         await _synthesize_into_section(
             context,
             self,
@@ -3748,6 +3948,9 @@ class ExportQAAgent(Agent):
             "evidence_signal_preflight",
             "evidence_table_preflight",
             "freshness_sensitive_evidence",
+            "leadership_source_hygiene",
+            "reader_artifact_hygiene",
+            "signal_section_synthesis",
         }
         context.report.quality_checks = [check for check in context.report.quality_checks if check.name not in qa_check_names]
         has_deck = context.report.deck_spec is not None
@@ -3783,6 +3986,36 @@ class ExportQAAgent(Agent):
         table_floor = (len(context.report.claims) + len(context.report.evidence_signals)) if context.report.claims else 0
         table_depth_ok = len(context.report.evidence_table_rows) >= table_floor
         stale_sensitive_claims = _stale_sensitive_claim_ids(context)
+        missing_publisher_sources = [
+            source.id
+            for source in public_sources
+            if not (source.publisher or _infer_publisher_from_url(source.url))
+        ]
+        wikipedia_sources = [source.id for source in public_sources if _is_wikipedia_source(source)]
+        reader_corpus = "\n".join(
+            [section.summary for section in context.report.sections]
+            + [claim.text for claim in context.report.claims]
+            + [f"{signal.title}\n{signal.detail}" for signal in context.report.evidence_signals]
+        )
+        raw_reader_artifacts = [
+            token
+            for token in ["linkedinText", "countryCode", "regionCode", "parsed':", '"parsed"', "(, ,"]
+            if token in reader_corpus
+        ]
+        investment_keywords: list[str] = SECTION_SIGNAL_REPAIR_SPECS["recent_investments"]["keywords"]  # type: ignore[assignment]
+        investment_signal_count = len(
+            [
+                signal
+                for signal in context.report.evidence_signals
+                if signal.signal_type in {EvidenceSignalType.investment, EvidenceSignalType.it_investment, EvidenceSignalType.partnership_deal}
+                and _signal_matches_keywords(signal, investment_keywords)
+            ]
+        )
+        recent_investments = _section(context, "recent_investments")
+        investment_section_ok = (
+            recent_investments.confidence_score >= 0.6
+            and len(_reader_claims_for_section(context, "recent_investments")) >= min(2, max(1, investment_signal_count))
+        ) or investment_signal_count == 0
         deep_research_checks = [check for check in context.report.quality_checks if check.name == "openai_deep_research_background"]
         deep_research_ok = bool(deep_research_checks and deep_research_checks[-1].passed) if context.run.mode == ResearchMode.deep else True
         reader_ready = not scaffold_sections
@@ -3875,6 +4108,36 @@ class ExportQAAgent(Agent):
                         f"{len(stale_sensitive_claims)} freshness-sensitive claims rely only on stale baseline sources; examples: {stale_sensitive_claims[:8]}."
                         if stale_sensitive_claims
                         else "Freshness-sensitive sections do not rely only on stale baseline sources."
+                    ),
+                ),
+                QualityCheck(
+                    name="leadership_source_hygiene",
+                    passed=not missing_publisher_sources and not wikipedia_sources,
+                    severity="warning" if missing_publisher_sources or wikipedia_sources else "info",
+                    message=(
+                        f"Source appendix hygiene warnings: missing publishers={missing_publisher_sources[:8]}, wikipedia/downgraded={wikipedia_sources[:8]}."
+                        if missing_publisher_sources or wikipedia_sources
+                        else "Final-facing sources have display publishers and avoid Wikipedia as a primary source."
+                    ),
+                ),
+                QualityCheck(
+                    name="reader_artifact_hygiene",
+                    passed=not raw_reader_artifacts,
+                    severity="blocker" if raw_reader_artifacts else "info",
+                    message=(
+                        f"Reader-facing text still contains raw extraction artifacts: {raw_reader_artifacts}."
+                        if raw_reader_artifacts
+                        else "Reader-facing text is free of raw extraction JSON and malformed empty citation punctuation."
+                    ),
+                ),
+                QualityCheck(
+                    name="signal_section_synthesis",
+                    passed=investment_section_ok,
+                    severity="warning" if not investment_section_ok else "info",
+                    message=(
+                        f"Recent Investments section has {len(_reader_claims_for_section(context, 'recent_investments'))} reader-ready claims while {investment_signal_count} investment-related signals exist."
+                        if not investment_section_ok
+                        else "Investment/deal signals are reflected in the Recent Investments section when available."
                     ),
                 ),
             ]

@@ -26,8 +26,9 @@ from app.models import (
     SourceSnapshot,
     SourceTier,
 )
+from app.providers.extraction import _apify_people_page_from_item
 from app.providers.registry import ProviderRegistry
-from app.services.exporter import ReportExporter, _clean_text, _insight_inventory, _leadership_brief
+from app.services.exporter import ReportExporter, _clean_text, _insight_inventory, _leadership_brief, _public_sources
 from app.services.report_chat import ReportChatService
 from app.storage.evidence_store import EvidenceTableStore
 
@@ -88,6 +89,96 @@ def test_source_tier_inference_and_allowed_uses():
     assert "announced_partnership" in press_release.allowed_uses
     assert careers_page.source_tier == SourceTier.tier_4_directional_signal
     assert "hiring_signal" in careers_page.allowed_uses
+
+
+def test_source_hygiene_infers_publishers_and_hides_wikipedia_from_final_sources():
+    official_press = pipeline._enrich_source(
+        EvidenceSource(
+            url="https://www.olympusamerica.com/press-release/2025-09-30/olympus-launches-ai-platform",
+            title="Olympus Launches AI Platform",
+            publisher="OpenAI Deep Research",
+            credibility=SourceCredibility.reputable_news,
+            credibility_score=0.78,
+        )
+    )
+    wikipedia = pipeline._enrich_source(
+        EvidenceSource(
+            url="https://en.wikipedia.org/wiki/Example",
+            title="Example - Wikipedia",
+            credibility=SourceCredibility.reputable_news,
+            credibility_score=0.82,
+        )
+    )
+    report = AccountReport(
+        run_id="run_test",
+        company_name="BenchmarkCo",
+        mode=ResearchMode.quick,
+        freshness_window=FreshnessWindow.six_months,
+        sections=[],
+        claims=[],
+        sources=[official_press, wikipedia],
+    )
+
+    assert official_press.publisher and official_press.publisher != "OpenAI Deep Research"
+    assert official_press.source_tier == SourceTier.tier_2_official_company
+    assert wikipedia.source_tier == SourceTier.tier_4_directional_signal
+    assert wikipedia not in _public_sources(report)
+
+
+def test_apify_people_page_cleans_nested_location_metadata():
+    page = _apify_people_page_from_item(
+        {
+            "name": "Asha Rao",
+            "title": "AI Engineering Director",
+            "companyName": "BenchmarkCo",
+            "location": {
+                "linkedinText": "Dallas-Fort Worth Metroplex",
+                "countryCode": "US",
+                "parsed": {"text": "Dallas, TX, United States", "countryCode": "US"},
+            },
+            "profileUrl": "https://www.linkedin.com/in/example",
+        },
+        "BenchmarkCo AI Engineering",
+    )
+
+    assert page.metadata["location"] == "Dallas-Fort Worth Metroplex"
+    assert "linkedinText" not in page.text
+    assert "countryCode" not in page.text
+
+
+def test_signal_graph_repairs_recent_investment_section_from_existing_signals(tmp_path):
+    context = _context(tmp_path)
+    source = pipeline._enrich_source(
+        EvidenceSource(
+            url="https://example.com/newsroom/ai-investment-2026",
+            title="BenchmarkCo announces AI investment program",
+            publisher="BenchmarkCo",
+            published_at="2026-03-05",
+            credibility=SourceCredibility.company_page,
+            credibility_score=0.86,
+        )
+    )
+    context.report.sources.append(source)
+    context.report.evidence_signals.append(
+        EvidenceSignal(
+            section_id="partnerships_deals",
+            signal_type=EvidenceSignalType.investment,
+            title="BenchmarkCo announced an AI investment program",
+            detail="BenchmarkCo announced an AI investment program for regulated workflow automation and cloud modernization.",
+            signal_strength="directional",
+            source_ids=[source.id],
+            confidence_score=0.84,
+        )
+    )
+    section = pipeline._section(context, "recent_investments")
+    section.summary = "Recent investments are analyzed only when exact public evidence supports every field."
+    section.confidence_score = 0.0
+
+    pipeline._repair_weak_sections_from_signal_graph(context)
+
+    assert section.confidence_score >= 0.72
+    assert "AI investment program" in section.summary
+    assert section.claim_ids
 
 
 def test_recency_sensitive_sections_exclude_2024_baseline_when_recent_sources_exist(tmp_path):

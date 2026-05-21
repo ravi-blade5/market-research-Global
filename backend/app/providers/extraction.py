@@ -9,8 +9,31 @@ from app.config import Settings
 from app.providers.base import ExtractedPage, ExtractionJobResult, ExtractionProvider
 
 
+def _compact_value(value: Any) -> str:
+    if value in (None, "", [], {}):
+        return ""
+    if isinstance(value, str):
+        return " ".join(value.split())
+    if isinstance(value, dict):
+        parsed = value.get("parsed") if isinstance(value.get("parsed"), dict) else {}
+        preferred = (
+            value.get("linkedinText")
+            or value.get("text")
+            or value.get("name")
+            or parsed.get("text")
+        )
+        if preferred:
+            return _compact_value(preferred)
+        parts = [_compact_value(item) for item in value.values()]
+        return " | ".join(part for part in parts if part)
+    if isinstance(value, list):
+        parts = [_compact_value(item) for item in value[:8]]
+        return " | ".join(part for part in parts if part)
+    return " ".join(str(value).split())
+
+
 def _metadata_to_str(metadata: dict[str, Any] | None) -> dict[str, str]:
-    return {str(k): str(v) for k, v in (metadata or {}).items() if v is not None}
+    return {str(k): _compact_value(v) for k, v in (metadata or {}).items() if _compact_value(v)}
 
 
 def _firecrawl_page_from_payload(payload: dict[str, Any], fallback_url: str) -> ExtractedPage:
@@ -57,16 +80,15 @@ def _first_present(item: dict[str, Any], keys: list[str]) -> Any:
 
 def _flatten_people_text(value: Any) -> str:
     if isinstance(value, str):
-        return value
+        return " ".join(value.split())
     if isinstance(value, dict):
-        return " | ".join(str(v) for v in value.values() if v not in (None, "", [], {}))
+        return _compact_value(value)
     if isinstance(value, list):
         parts: list[str] = []
         for item in value[:6]:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict):
-                parts.append(" | ".join(str(v) for v in item.values() if v not in (None, "", [], {})))
+            compact = _compact_value(item)
+            if compact:
+                parts.append(compact)
         return "\n".join(part for part in parts if part)
     return ""
 
@@ -80,9 +102,9 @@ def _apify_people_page_from_item(item: dict[str, Any], fallback_query: str) -> E
         item,
         ["linkedinUrl", "linkedin_url", "linkedinProfileUrl", "profileUrl", "profile_url", "url", "publicUrl"],
     ) or f"apify://people/{name}"
-    headline = _first_present(item, ["headline", "title", "position", "currentPosition", "jobTitle", "occupation"])
-    company = _first_present(item, ["companyName", "company", "currentCompany", "currentCompanyName", "organization"])
-    location = _first_present(item, ["location", "geo", "city", "country"])
+    headline = _compact_value(_first_present(item, ["headline", "title", "position", "currentPosition", "jobTitle", "occupation"]))
+    company = _compact_value(_first_present(item, ["companyName", "company", "currentCompany", "currentCompanyName", "organization"]))
+    location = _compact_value(_first_present(item, ["location", "geo", "city", "country"]))
     about = _first_present(item, ["about", "summary", "description", "bio"])
     posts = _first_present(item, ["posts", "recentPosts", "latestPosts", "activities", "updates"])
     experience = _first_present(item, ["experience", "experiences", "positions", "currentPositions", "workExperience"])

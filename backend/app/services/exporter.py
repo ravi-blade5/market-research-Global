@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 from pptx import Presentation
 from pptx.dml.color import RGBColor
-from pptx.enum.text import PP_ALIGN
+from pptx.enum.text import MSO_AUTO_SIZE, PP_ALIGN
 from pptx.util import Inches, Pt
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import landscape, letter
@@ -130,6 +130,34 @@ def _source_inferred_datetime(source: EvidenceSource) -> datetime | None:
     return None
 
 
+def _infer_publisher_from_url(url: str) -> str | None:
+    parsed = urlparse(url)
+    domain = parsed.netloc.lower().replace("www.", "")
+    if not domain:
+        return None
+    if "wikipedia.org" in domain:
+        return "Wikipedia"
+    if "sec.gov" in domain:
+        return "SEC"
+    parts = [part for part in domain.split(".") if part and part not in {"com", "org", "net", "co", "uk", "jp", "de", "in"}]
+    if not parts:
+        return domain
+    label = parts[-1]
+    acronyms = {"sap": "SAP", "ibm": "IBM", "aws": "AWS", "hcltech": "HCLTech"}
+    return acronyms.get(label, label.replace("-", " ").title())
+
+
+def _display_publisher(source: EvidenceSource) -> str:
+    publisher = source.publisher or _infer_publisher_from_url(source.url) or "Unlabeled source"
+    if publisher in {"Unknown publisher", "OpenAI Deep Research", "OpenAI adapter"}:
+        publisher = _infer_publisher_from_url(source.url) or "Unlabeled source"
+    return _safe_text(publisher)
+
+
+def _is_wikipedia_source(source: EvidenceSource) -> bool:
+    return "wikipedia.org" in source.url.lower()
+
+
 def _rank_public_sources(sources: list[EvidenceSource]) -> list[EvidenceSource]:
     def sort_key(source: EvidenceSource) -> tuple[float, int, float, str]:
         source_date = _source_inferred_datetime(source)
@@ -138,7 +166,10 @@ def _rank_public_sources(sources: list[EvidenceSource]) -> list[EvidenceSource]:
         year_score = max(topic_years) if topic_years else 0
         return (-date_score, -year_score, -source.credibility_score, source.title.lower())
 
-    return sorted([source for source in sources if source.url.startswith("http")], key=sort_key)
+    final_facing = [source for source in sources if source.url.startswith("http") and not _is_wikipedia_source(source)]
+    if not final_facing:
+        final_facing = [source for source in sources if source.url.startswith("http")]
+    return sorted(final_facing, key=sort_key)
 
 
 def _source_numbers(report: AccountReport) -> dict[str, int]:
@@ -161,10 +192,27 @@ def _clean_text(text: str, source_numbers: dict[str, int]) -> str:
     cleaned = re.sub(r"\[\s*[,;:\s]*\]", "", cleaned)
     cleaned = re.sub(r"\[\s*(?:cited source[\s,;]*)+\]", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s*cited source(?:\s*,\s*cited source)*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = _clean_reader_artifacts(cleaned)
     cleaned = cleaned.replace("R&D;", "R&D").strip()
     for old, new in CLIENT_TEXT_REPLACEMENTS.items():
         cleaned = cleaned.replace(old, new)
     return _safe_text(cleaned)
+
+
+def _clean_reader_artifacts(text: str) -> str:
+    def clean_location(match: re.Match[str]) -> str:
+        fragment = match.group(1)
+        location_match = re.search(r"['\"]linkedinText['\"]\s*:\s*['\"]([^'\"]+)['\"]", fragment)
+        if not location_match:
+            location_match = re.search(r"['\"]text['\"]\s*:\s*['\"]([^'\"]+)['\"]", fragment)
+        location = location_match.group(1) if location_match else "location unavailable"
+        return f"location: {location}. Treat"
+
+    cleaned = re.sub(r"location:\s*(\{.*?\})\.\s*Treat", clean_location, text, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(r"\(\s*(?:[,;]\s*)+\)", "", cleaned)
+    cleaned = re.sub(r"\s+([,.;:])", r"\1", cleaned)
+    cleaned = re.sub(r"(?:,\s*){2,}", ", ", cleaned)
+    return cleaned
 
 
 def _safe_text(text: str) -> str:
@@ -240,7 +288,7 @@ def _citation_labels(report: AccountReport, source_ids: list[str], source_number
         number = source_numbers.get(source.id)
         if not number:
             continue
-        publisher = f" - {_safe_text(source.publisher)}" if source.publisher else ""
+        publisher = f" - {_display_publisher(source)}"
         labels.append(f"S{number}: {_readable_source_title(source)}{publisher}")
         if len(labels) >= limit:
             break
@@ -890,91 +938,101 @@ class ReportExporter:
     def _add_pptx_insight_inventory(self, prs: Presentation, report: AccountReport, source_numbers: dict[str, int]) -> None:
         for section in _insight_inventory(report, limit_per_section=7):
             rows: list[EvidenceTableRow] = section["rows"]  # type: ignore[assignment]
-            slide = prs.slides.add_slide(prs.slide_layouts[6])
-            bg = slide.background.fill
-            bg.solid()
-            bg.fore_color.rgb = _rgb("light_blue")
-            header = slide.shapes.add_shape(1, Inches(0), Inches(0), Inches(13.333), Inches(0.82))
-            header.fill.solid()
-            header.fill.fore_color.rgb = _rgb("dark_blue")
-            header.line.fill.background()
-            accent = slide.shapes.add_shape(1, Inches(0), Inches(0.82), Inches(13.333), Inches(0.06))
-            accent.fill.solid()
-            accent.fill.fore_color.rgb = _rgb("tech_purple")
-            accent.line.fill.background()
+            for chunk_start in range(0, len(rows), 4):
+                chunk = rows[chunk_start : chunk_start + 4]
+                slide = prs.slides.add_slide(prs.slide_layouts[6])
+                bg = slide.background.fill
+                bg.solid()
+                bg.fore_color.rgb = _rgb("light_blue")
+                header = slide.shapes.add_shape(1, Inches(0), Inches(0), Inches(13.333), Inches(0.82))
+                header.fill.solid()
+                header.fill.fore_color.rgb = _rgb("dark_blue")
+                header.line.fill.background()
+                accent = slide.shapes.add_shape(1, Inches(0), Inches(0.82), Inches(13.333), Inches(0.06))
+                accent.fill.solid()
+                accent.fill.fore_color.rgb = _rgb("tech_purple")
+                accent.line.fill.background()
 
-            title_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.19), Inches(9.6), Inches(0.45))
-            title_box.text_frame.text = str(section["title"])
-            title_box.text_frame.paragraphs[0].font.bold = True
-            title_box.text_frame.paragraphs[0].font.size = Pt(22)
-            title_box.text_frame.paragraphs[0].font.color.rgb = _rgb("tech_gray")
+                title_text = str(section["title"])
+                if chunk_start:
+                    title_text += " (continued)"
+                title_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.19), Inches(9.6), Inches(0.45))
+                title_box.text_frame.text = title_text
+                title_box.text_frame.paragraphs[0].font.bold = True
+                title_box.text_frame.paragraphs[0].font.size = Pt(22)
+                title_box.text_frame.paragraphs[0].font.color.rgb = _rgb("tech_gray")
 
-            count_box = slide.shapes.add_textbox(Inches(10.45), Inches(0.22), Inches(2.35), Inches(0.28))
-            count_box.text_frame.text = f"{len(rows)} surfaced rows"
-            count_box.text_frame.paragraphs[0].font.size = Pt(8)
-            count_box.text_frame.paragraphs[0].font.color.rgb = _rgb("light_blue")
-            count_box.text_frame.paragraphs[0].alignment = PP_ALIGN.RIGHT
+                count_box = slide.shapes.add_textbox(Inches(10.35), Inches(0.22), Inches(2.45), Inches(0.28))
+                count_box.text_frame.text = (
+                    f"Rows {chunk_start + 1}-{chunk_start + len(chunk)} of {len(rows)}"
+                    if len(rows) > 4
+                    else f"{len(rows)} surfaced rows"
+                )
+                count_box.text_frame.paragraphs[0].font.size = Pt(8)
+                count_box.text_frame.paragraphs[0].font.color.rgb = _rgb("light_blue")
+                count_box.text_frame.paragraphs[0].alignment = PP_ALIGN.RIGHT
 
-            subtitle = slide.shapes.add_textbox(Inches(0.6), Inches(1.05), Inches(11.8), Inches(0.35))
-            subtitle.text_frame.text = _truncate(str(section["subtitle"]), 165)
-            subtitle.text_frame.paragraphs[0].font.size = Pt(10)
-            subtitle.text_frame.paragraphs[0].font.color.rgb = _rgb("dark_purple")
+                subtitle = slide.shapes.add_textbox(Inches(0.6), Inches(1.05), Inches(11.8), Inches(0.35))
+                subtitle.text_frame.text = _truncate(str(section["subtitle"]), 165)
+                subtitle.text_frame.paragraphs[0].font.size = Pt(10)
+                subtitle.text_frame.paragraphs[0].font.color.rgb = _rgb("dark_purple")
 
-            table_x = 0.58
-            table_y = 1.55
-            widths = [2.7, 6.2, 1.35, 1.65]
-            headers = ["Insight", "Evidence basis", "Strength", "Sources"]
-            x = table_x
-            for idx, header_text in enumerate(headers):
-                box = slide.shapes.add_shape(1, Inches(x), Inches(table_y), Inches(widths[idx]), Inches(0.32))
-                box.fill.solid()
-                box.fill.fore_color.rgb = _rgb("dark_blue")
-                box.line.fill.background()
-                frame = box.text_frame
-                frame.clear()
-                p = frame.paragraphs[0]
-                p.text = header_text
-                p.font.bold = True
-                p.font.size = Pt(8)
-                p.font.color.rgb = _rgb("light_blue")
-                x += widths[idx]
-
-            row_y = table_y + 0.38
-            row_h = 0.66
-            for idx, row in enumerate(rows):
-                fill = "tech_gray" if idx % 2 == 0 else "light_blue"
+                table_x = 0.58
+                table_y = 1.55
+                widths = [2.85, 6.05, 1.35, 1.65]
+                headers = ["Insight", "Evidence basis", "Strength", "Sources"]
                 x = table_x
-                values = [
-                    _truncate(_clean_text(row.title, source_numbers), 78),
-                    _truncate(_clean_text(row.detail, source_numbers), 210),
-                    _truncate(_row_strength(row), 34),
-                    _source_refs(row.source_ids, source_numbers),
-                ]
-                for col, value in enumerate(values):
-                    cell = slide.shapes.add_shape(1, Inches(x), Inches(row_y), Inches(widths[col]), Inches(row_h))
-                    cell.fill.solid()
-                    cell.fill.fore_color.rgb = _rgb(fill)
-                    cell.line.color.rgb = _rgb("mid_blue")
-                    frame = cell.text_frame
-                    frame.word_wrap = True
-                    frame.margin_left = Inches(0.05)
-                    frame.margin_right = Inches(0.05)
-                    frame.margin_top = Inches(0.03)
-                    frame.margin_bottom = Inches(0.03)
+                for idx, header_text in enumerate(headers):
+                    box = slide.shapes.add_shape(1, Inches(x), Inches(table_y), Inches(widths[idx]), Inches(0.32))
+                    box.fill.solid()
+                    box.fill.fore_color.rgb = _rgb("dark_blue")
+                    box.line.fill.background()
+                    frame = box.text_frame
                     frame.clear()
                     p = frame.paragraphs[0]
-                    p.text = value
-                    p.font.size = Pt(6.5 if col == 1 else 7)
-                    p.font.bold = col == 0
-                    p.font.color.rgb = _rgb("dark_purple")
-                    x += widths[col]
-                row_y += row_h + 0.04
+                    p.text = header_text
+                    p.font.bold = True
+                    p.font.size = Pt(8)
+                    p.font.color.rgb = _rgb("light_blue")
+                    x += widths[idx]
 
-            footer = slide.shapes.add_textbox(Inches(0.55), Inches(6.95), Inches(12.2), Inches(0.25))
-            footer.text_frame.text = "HCLTech Market Research Portal | Insight inventory from evidence tables"
-            footer.text_frame.paragraphs[0].font.size = Pt(8)
-            footer.text_frame.paragraphs[0].font.color.rgb = _rgb("dark_blue")
-            footer.text_frame.paragraphs[0].alignment = PP_ALIGN.RIGHT
+                row_y = table_y + 0.38
+                row_h = 1.08
+                for idx, row in enumerate(chunk, start=chunk_start):
+                    fill = "tech_gray" if idx % 2 == 0 else "light_blue"
+                    x = table_x
+                    values = [
+                        _row_display_text(row, source_numbers),
+                        _clean_text(row.detail, source_numbers),
+                        _row_strength(row),
+                        _source_refs(row.source_ids, source_numbers),
+                    ]
+                    for col, value in enumerate(values):
+                        cell = slide.shapes.add_shape(1, Inches(x), Inches(row_y), Inches(widths[col]), Inches(row_h))
+                        cell.fill.solid()
+                        cell.fill.fore_color.rgb = _rgb(fill)
+                        cell.line.color.rgb = _rgb("mid_blue")
+                        frame = cell.text_frame
+                        frame.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+                        frame.word_wrap = True
+                        frame.margin_left = Inches(0.05)
+                        frame.margin_right = Inches(0.05)
+                        frame.margin_top = Inches(0.03)
+                        frame.margin_bottom = Inches(0.03)
+                        frame.clear()
+                        p = frame.paragraphs[0]
+                        p.text = value
+                        p.font.size = Pt(5.4 if col == 1 else 5.8)
+                        p.font.bold = col == 0
+                        p.font.color.rgb = _rgb("dark_purple")
+                        x += widths[col]
+                    row_y += row_h + 0.07
+
+                footer = slide.shapes.add_textbox(Inches(0.55), Inches(6.95), Inches(12.2), Inches(0.25))
+                footer.text_frame.text = "HCLTech Market Research Portal | Insight inventory from evidence tables"
+                footer.text_frame.paragraphs[0].font.size = Pt(8)
+                footer.text_frame.paragraphs[0].font.color.rgb = _rgb("dark_blue")
+                footer.text_frame.paragraphs[0].alignment = PP_ALIGN.RIGHT
 
     def export_pdf(self, report: AccountReport, path: Path) -> Artifact:
         source_numbers = _source_numbers(report)
@@ -1388,96 +1446,101 @@ class ReportExporter:
         inventory = _insight_inventory(report, limit_per_section=7)
         for section in inventory:
             rows: list[EvidenceTableRow] = section["rows"]  # type: ignore[assignment]
-            page.showPage()
-            page_number += 1
-            self._draw_pdf_header(page, str(section["title"]), width, height, page_number, f"{len(rows)} surfaced insight rows")
-            y = height - 88
-            y = _draw_wrapped(
-                page,
-                str(section["subtitle"]),
-                46,
-                y,
-                width - 92,
-                "Helvetica",
-                8,
-                10,
-                _rl_color("dark_purple"),
-                max_lines=2,
-            )
-            y -= 12
-            columns = [
-                ("Insight", 46, 160),
-                ("Evidence basis", 210, 344),
-                ("Strength", 560, 76),
-                ("Sources", 642, 100),
-            ]
-            page.setFillColor(_rl_color("dark_blue"))
-            page.roundRect(34, y - 20, width - 68, 20, 4, fill=1, stroke=0)
-            page.setFillColor(_rl_color("light_blue"))
-            page.setFont("Helvetica-Bold", 7)
-            for label, x, _ in columns:
-                page.drawString(x, y - 13, label)
-            y -= 30
-            for idx, row in enumerate(rows):
-                if y < 86:
-                    page.showPage()
-                    page_number += 1
-                    self._draw_pdf_header(page, str(section["title"]), width, height, page_number, "continued")
-                    y = height - 88
-                row_height = 50
-                page.setFillColor(_rl_color("tech_gray" if idx % 2 == 0 else "light_blue"))
-                page.roundRect(34, y - row_height + 4, width - 68, row_height, 4, fill=1, stroke=0)
-                page.setFillColor(_rl_color("dark_blue"))
-                page.setFont("Helvetica-Bold", 7)
-                _draw_wrapped(
+            for chunk_start in range(0, len(rows), 4):
+                chunk = rows[chunk_start : chunk_start + 4]
+                page.showPage()
+                page_number += 1
+                suffix = (
+                    f"rows {chunk_start + 1}-{chunk_start + len(chunk)} of {len(rows)}"
+                    if len(rows) > 4
+                    else f"{len(rows)} surfaced insight rows"
+                )
+                self._draw_pdf_header(page, str(section["title"]), width, height, page_number, suffix)
+                y = height - 88
+                y = _draw_wrapped(
                     page,
-                    _clean_text(row.title, source_numbers),
+                    str(section["subtitle"]),
                     46,
-                    y - 10,
-                    150,
-                    "Helvetica-Bold",
-                    7,
-                    8,
-                    _rl_color("dark_blue"),
-                    max_lines=3,
-                )
-                _draw_wrapped(
-                    page,
-                    _clean_text(row.detail, source_numbers),
-                    210,
-                    y - 10,
-                    336,
+                    y,
+                    width - 92,
                     "Helvetica",
-                    7,
                     8,
-                    colors.black,
-                    max_lines=4,
-                )
-                _draw_wrapped(
-                    page,
-                    _row_strength(row),
-                    560,
-                    y - 10,
-                    70,
-                    "Helvetica-Bold",
-                    7,
-                    8,
+                    10,
                     _rl_color("dark_purple"),
                     max_lines=2,
+                    add_ellipsis=False,
                 )
-                _draw_wrapped(
-                    page,
-                    _source_refs(row.source_ids, source_numbers),
-                    642,
-                    y - 10,
-                    92,
-                    "Helvetica",
-                    7,
-                    8,
-                    _rl_color("dark_purple"),
-                    max_lines=2,
-                )
-                y -= row_height + 6
+                y -= 12
+                columns = [
+                    ("Insight", 46, 174),
+                    ("Evidence basis", 226, 318),
+                    ("Strength", 560, 76),
+                    ("Sources", 642, 100),
+                ]
+                page.setFillColor(_rl_color("dark_blue"))
+                page.roundRect(34, y - 20, width - 68, 20, 4, fill=1, stroke=0)
+                page.setFillColor(_rl_color("light_blue"))
+                page.setFont("Helvetica-Bold", 7)
+                for label, x, _ in columns:
+                    page.drawString(x, y - 13, label)
+                y -= 34
+                for idx, row in enumerate(chunk, start=chunk_start):
+                    row_height = 82
+                    page.setFillColor(_rl_color("tech_gray" if idx % 2 == 0 else "light_blue"))
+                    page.roundRect(34, y - row_height + 4, width - 68, row_height, 4, fill=1, stroke=0)
+                    _draw_wrapped(
+                        page,
+                        _row_display_text(row, source_numbers),
+                        46,
+                        y - 10,
+                        166,
+                        "Helvetica-Bold",
+                        6,
+                        7,
+                        _rl_color("dark_blue"),
+                        max_lines=8,
+                        add_ellipsis=False,
+                    )
+                    _draw_wrapped(
+                        page,
+                        _clean_text(row.detail, source_numbers),
+                        226,
+                        y - 10,
+                        310,
+                        "Helvetica",
+                        6,
+                        7,
+                        colors.black,
+                        max_lines=9,
+                        add_ellipsis=False,
+                    )
+                    _draw_wrapped(
+                        page,
+                        _row_strength(row),
+                        560,
+                        y - 10,
+                        70,
+                        "Helvetica-Bold",
+                        7,
+                        8,
+                        _rl_color("dark_purple"),
+                        max_lines=3,
+                        add_ellipsis=False,
+                    )
+                    _draw_wrapped(
+                        page,
+                        _source_refs(row.source_ids, source_numbers),
+                        642,
+                        y - 10,
+                        92,
+                        "Helvetica",
+                        7,
+                        8,
+                        _rl_color("dark_purple"),
+                        max_lines=3,
+                        add_ellipsis=False,
+                    )
+                    y -= row_height + 8
         return page_number
 
     def _draw_sources_appendix(
@@ -1523,7 +1586,7 @@ class ReportExporter:
                 y = height - 88
             number = source_numbers.get(source.id, 0)
             title = f"S{number}: {_readable_source_title(source)}"
-            publisher = f"{_safe_text(source.publisher or 'Unknown publisher')} | {source.credibility.value} | score {source.credibility_score:.2f}"
+            publisher = f"{_display_publisher(source)} | {source.credibility.value} | score {source.credibility_score:.2f}"
             page.setFillColor(_rl_color("light_blue"))
             page.roundRect(34, y - 46, width - 68, 42, 5, fill=1, stroke=0)
             page.setFillColor(_rl_color("dark_blue"))
